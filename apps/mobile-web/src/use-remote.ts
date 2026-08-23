@@ -23,6 +23,7 @@ import type { UserFeedback } from './errors.js'
 import {
   emptyQuestionAnswers,
   offlineProbeDelay,
+  resolvedApproval,
   withResolvedApproval,
   withoutPendingApproval,
 } from './remote-state.js'
@@ -251,9 +252,11 @@ export function useRemote() {
   const [pendingQuestions, setPendingQuestions] = useState<QuestionRequest[]>([])
   const [approvalDisplays, setApprovalDisplays] = useState<Record<string, ApprovalDisplay>>({})
   const [resolvedApprovals, setResolvedApprovals] = useState<ResolvedApproval[]>([])
+  const [approvalNotice, setApprovalNotice] = useState<ResolvedApproval | null>(null)
   const [questionDrafts, setQuestionDrafts] = useState<Record<string, QuestionAnswerItem[]>>({})
   const pendingApprovalsRef = useRef<ApprovalRequest[]>([])
   const approvalDisplaysRef = useRef<Record<string, ApprovalDisplay>>({})
+  const resolvedApprovalIdsRef = useRef(new Set<string>())
   const [queuedBySession, setQueuedBySession] = useState<Record<string, RemoteQueuedItem[]>>({})
   const [connection, setConnection] = useState<ConnectionState>('connecting')
   const connectionRef = useRef<ConnectionState>('connecting')
@@ -399,7 +402,16 @@ export function useRemote() {
     approvalDisplaysRef.current = approvalDisplays
   }, [approvalDisplays])
 
+  useEffect(() => {
+    if (approvalNotice === null) return
+    const timer = window.setTimeout(() => {
+      setApprovalNotice(current => current === approvalNotice ? null : current)
+    }, 4_000)
+    return () => window.clearTimeout(timer)
+  }, [approvalNotice])
+
   const clearPendingQuestion = useCallback((rpcId: string) => {
+    setApprovalNotice(null)
     setPendingQuestions(previous => previous.filter(item => item.rpcId !== rpcId))
     setQuestionDrafts(previous => {
       if (previous[rpcId] === undefined) return previous
@@ -418,10 +430,15 @@ export function useRemote() {
   }, [])
 
   const recordResolvedApproval = useCallback((request: ApprovalRequest, outcome: string) => {
+    if (resolvedApprovalIdsRef.current.has(request.approvalId)) return
+    resolvedApprovalIdsRef.current.add(request.approvalId)
     const display = approvalDisplaysRef.current[request.approvalId]
+    const resolvedAt = new Date().toISOString()
+    const notice = resolvedApproval(request, outcome, display, resolvedAt)
     setResolvedApprovals(previous => {
-      return withResolvedApproval(previous, request, outcome, display, new Date().toISOString())
+      return withResolvedApproval(previous, request, outcome, display, resolvedAt)
     })
+    setApprovalNotice(notice)
   }, [])
 
   const refreshAll = useCallback(async () => {
@@ -692,6 +709,7 @@ export function useRemote() {
     if (envelope.type === 'approval/requested') {
       const request = asApprovalRequest(envelope.payload)
       if (request !== undefined) {
+        setApprovalNotice(null)
         setPendingApprovals(previous => {
           const next = previous.some(item => item.approvalId === request.approvalId) ? previous : [...previous, request]
           pendingApprovalsRef.current = next
@@ -719,6 +737,7 @@ export function useRemote() {
     if (envelope.type === 'question/requested') {
       const request = asQuestionRequest(envelope.payload)
       if (request !== undefined) {
+        setApprovalNotice(null)
         setPendingQuestions(previous => (
           previous.some(item => item.rpcId === request.rpcId) ? previous : [...previous, request]
         ))
@@ -1013,6 +1032,7 @@ export function useRemote() {
     pendingQuestions,
     approvalDisplays,
     resolvedApprovals,
+    approvalNotice,
     questionDrafts,
     updateQuestionDraft,
     queuedItems: selectedSessionId === null ? [] : (queuedBySession[selectedSessionId] ?? []),

@@ -23,3 +23,8 @@ spikes/**/.tmp/
 
 # pnpm store (localized under the project)
 .pnpm-store/
+
+# Raw README screenshots. Unmasked captures land here (real user paths, Tailscale
+# device names, Remote Host IDs), so they stay local; only the composed images in
+# assets/readme/ are published.
+raw/

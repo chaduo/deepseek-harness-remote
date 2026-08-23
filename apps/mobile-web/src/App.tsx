@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { buildReviewTimeline, groupSessionsByWorkspace } from '@dsh-remote/domain'
 import type {
@@ -14,6 +14,7 @@ import type {
 } from '@dsh-remote/domain'
 import { innermostReason } from './errors.js'
 import type { UserFeedback } from './errors.js'
+import { questionAnswersForSubmit, questionAnswersReady } from './remote-state.js'
 import { useRemote } from './use-remote.js'
 import type { CreateWorkspaceResult } from './use-remote.js'
 
@@ -195,6 +196,7 @@ export default function App() {
             questions={remote.pendingQuestions}
             approvalDisplays={remote.approvalDisplays}
             resolvedApprovals={remote.resolvedApprovals}
+            approvalNotice={remote.approvalNotice}
             questionDrafts={remote.questionDrafts}
             onUpdateDraft={remote.updateQuestionDraft}
             onApprove={request => remote.respondApproval(request, 'allowed-once')}
@@ -680,11 +682,9 @@ function SessionDetail(props: {
     () => [...nodes].reverse().find((node): node is ReviewMessageNode => node.kind === 'message' && node.role === 'assistant'),
     [nodes],
   )
-  const [messageExpanded, setMessageExpanded] = useState(false)
   const [detailView, setDetailView] = useState<'conversation' | 'review'>('conversation')
   const [sending, setSending] = useState(false)
   const retryActionRef = useRef<{ fingerprint: string; key: string } | null>(null)
-  const messageText = lastMessage?.text ?? ''
 
   const submit = async (mode: 'queue' | 'steer') => {
     const text = props.promptText.trim()
@@ -745,19 +745,7 @@ function SessionDetail(props: {
         : (
             <>
               {lastMessage !== undefined && (
-                <div className={`last-message${messageExpanded ? ' expanded' : ' collapsed'}`}>
-                  <div className="last-message-head">
-                    <div className="muted">Agent 最新回复</div>
-                    {messageText.length > 280 && (
-                      <button className="ghost small" onClick={() => setMessageExpanded(value => !value)}>
-                        {messageExpanded ? '收起' : '展开全文'}
-                      </button>
-                    )}
-                  </div>
-                  <div className="last-message-body">
-                    <div className="message-text">{messageText}</div>
-                  </div>
-                </div>
+                <LatestAgentMessage key={lastMessage.seq} message={lastMessage} />
               )}
 
               {props.historyLoading && props.history === null && <div className="card loading-card">正在同步任务进度…</div>}
@@ -823,6 +811,49 @@ function SessionDetail(props: {
               </div>
             </>
           )}
+    </div>
+  )
+}
+
+function LatestAgentMessage(props: { message: ReviewMessageNode }) {
+  const [expanded, setExpanded] = useState(false)
+  const [canExpand, setCanExpand] = useState(false)
+  const bodyRef = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    if (expanded) return
+    const body = bodyRef.current
+    if (body === null) return
+
+    const measure = () => {
+      setCanExpand(body.scrollHeight > body.clientHeight + 1)
+    }
+    measure()
+
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(body)
+    return () => observer.disconnect()
+  }, [expanded, props.message.text])
+
+  return (
+    <div className={`last-message${expanded ? ' expanded' : ' collapsed'}${canExpand ? ' can-expand' : ''}`}>
+      <div className="last-message-head">
+        <div className="muted">Agent 最新回复</div>
+        {canExpand && (
+          <button
+            className="ghost small"
+            aria-controls="latest-agent-message"
+            aria-expanded={expanded}
+            onClick={() => setExpanded(value => !value)}
+          >
+            {expanded ? '收起' : '展开全文'}
+          </button>
+        )}
+      </div>
+      <div className="last-message-body" id="latest-agent-message" ref={bodyRef}>
+        <div className="message-text">{props.message.text}</div>
+      </div>
     </div>
   )
 }
@@ -1126,6 +1157,7 @@ function ApprovalView(props: {
   questions: ReturnType<typeof useRemote>['pendingQuestions']
   approvalDisplays: ReturnType<typeof useRemote>['approvalDisplays']
   resolvedApprovals: ReturnType<typeof useRemote>['resolvedApprovals']
+  approvalNotice: ReturnType<typeof useRemote>['approvalNotice']
   questionDrafts: ReturnType<typeof useRemote>['questionDrafts']
   onUpdateDraft: (rpcId: string, answers: ReturnType<typeof useRemote>['questionDrafts'][string]) => void
   onApprove: (request: ReturnType<typeof useRemote>['pendingApprovals'][number]) => Promise<boolean>
@@ -1162,10 +1194,10 @@ function ApprovalView(props: {
         </div>
       )}
 
-      {props.resolvedApprovals[0] !== undefined && (
+      {props.approvalNotice !== null && total === 0 && (
         <div className="approval-confirmation" role="status" aria-live="polite">
-          {props.resolvedApprovals[0].outcome === 'allowed-once' ? '已允许一次' : '已拒绝'} · {' '}
-          {props.resolvedApprovals[0].display?.toolTitle ?? props.resolvedApprovals[0].request.toolName}
+          {props.approvalNotice.outcome === 'allowed-once' ? '已允许一次' : '已拒绝'} · {' '}
+          {props.approvalNotice.display?.toolTitle ?? props.approvalNotice.request.toolName}
         </div>
       )}
 
@@ -1214,11 +1246,7 @@ function ApprovalView(props: {
       {props.questions.map(request => {
         const draft = props.questionDrafts[request.rpcId] ?? []
         const busy = pendingAction === `question:${request.rpcId}`
-        const allAnswered = request.questions.every(question => {
-          const answer = draft.find(item => item.id === question.id)
-          const custom = customAnswers[`${request.rpcId}:${question.id}`]?.trim() ?? ''
-          return (answer?.selected.length ?? 0) > 0 || custom !== ''
-        })
+        const answersReady = questionAnswersReady(request, draft)
         return (
           <div className="card attention-card question-card" key={request.rpcId}>
             <button className="context-link" onClick={() => props.onOpenTask(request.sessionId)}>
@@ -1269,25 +1297,24 @@ function ApprovalView(props: {
               )
             })}
             <button
-              disabled={pendingAction !== null || !allAnswered}
-              aria-describedby={`question-requirement-${request.rpcId}`}
+              className="question-submit"
+              disabled={pendingAction !== null || !answersReady}
+              aria-describedby={answersReady ? undefined : `question-requirement-${request.rpcId}`}
               onClick={() => void runAction(`question:${request.rpcId}`, async () => {
-                const answers = draft.map(answer => {
-                  const customValue = customAnswers[`${request.rpcId}:${answer.id}`]?.trim()
-                  return {
-                    ...answer,
-                    ...(customValue ? { custom: customValue } : {}),
-                  }
-                })
+                const customByQuestionId = Object.fromEntries(request.questions.map(question => [
+                  question.id,
+                  customAnswers[`${request.rpcId}:${question.id}`] ?? '',
+                ]))
+                const answers = questionAnswersForSubmit(request, draft, customByQuestionId)
                 props.onUpdateDraft(request.rpcId, answers)
                 return props.onAnswer(request, answers)
               })}
             >
               {busy ? '提交中…' : '提交回答'}
             </button>
-            {!allAnswered && (
+            {!answersReady && (
               <div className="question-requirement" id={`question-requirement-${request.rpcId}`} role="status">
-                请先为每个问题选择一项或填写自定义答案。
+                问题尚未完整加载，请刷新后重试。
               </div>
             )}
           </div>
@@ -1330,8 +1357,7 @@ function ReviewView(props: {
   onRefresh: () => void
 }) {
   const [filter, setFilter] = useState<ReviewFilter>('conversation')
-  const timelineRef = useRef<HTMLDivElement>(null)
-  const autoScrolledSessionRef = useRef<string | null>(null)
+  const reviewRootRef = useRef<HTMLElement>(null)
   const nodes = useMemo(
     () => buildReviewTimeline(props.history?.events ?? []),
     [props.history],
@@ -1356,22 +1382,18 @@ function ReviewView(props: {
   const eventCount = props.history?.events.length ?? 0
   const firstSeq = props.history?.events[0]?.sequence
 
-  useEffect(() => {
-    if (eventCount === 0 || props.historyLoading || autoScrolledSessionRef.current === props.sessionId) return
-    autoScrolledSessionRef.current = props.sessionId
+  useLayoutEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      const userMessages = timelineRef.current?.querySelectorAll('.review-card.message.user')
-      const content = timelineRef.current?.querySelectorAll('.review-card.message, .review-card.tool')
-      const target = userMessages !== undefined && userMessages.length > 0
-        ? userMessages.item(userMessages.length - 1)
-        : content?.item((content?.length ?? 0) - 1)
-      target?.scrollIntoView({ block: 'start' })
+      const root = reviewRootRef.current
+      const scroller = root?.closest('main')
+      if (scroller instanceof HTMLElement) scroller.scrollTop = 0
+      else root?.scrollIntoView({ block: 'start' })
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [eventCount, props.historyLoading, props.sessionId])
+  }, [props.sessionId])
 
   return (
-    <section className="review-view">
+    <section className="review-view" ref={reviewRootRef}>
       <div className="review-toolbar">
         <select value={filter} onChange={event => setFilter(event.target.value as ReviewFilter)} aria-label="筛选执行记录">
           <option value="conversation">对话与工具</option>
@@ -1415,7 +1437,7 @@ function ReviewView(props: {
         </div>
       )}
 
-      <div className="timeline" ref={timelineRef}>
+      <div className="timeline">
         {filtered.map(node => <ReviewNodeView key={`${node.kind}:${node.seq}`} node={node} final={node.kind === 'message' && node.seq === finalSeq} />)}
         {filter === 'conversation' && internalNodes.length > 0 && (
           <details className="internal-events">
