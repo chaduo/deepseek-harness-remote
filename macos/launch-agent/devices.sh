@@ -9,7 +9,7 @@
 #   macos/launch-agent/devices.sh allow-all
 set -euo pipefail
 
-PLIST="$HOME/Library/LaunchAgents/com.dshbox.remote-host.plist"
+PLIST="${DSH_REMOTE_LAUNCH_AGENT_PLIST:-$HOME/Library/LaunchAgents/com.dshbox.remote-host.plist}"
 LABEL="com.dshbox.remote-host"
 KEY="DSH_REMOTE_ALLOWED_DEVICE_IDS"
 
@@ -82,6 +82,13 @@ ids = [x.strip() for x in raw.split(',') if x.strip()]
 if target not in ids:
     print(f'{target} was not in the allowlist')
 else:
+    if len(ids) == 1:
+        print(
+            'error: refusing to remove the last allowed device; '
+            'use allow-all explicitly to allow every same-tailnet device',
+            file=sys.stderr,
+        )
+        sys.exit(1)
     ids.remove(target)
     env[key] = ','.join(ids)
     plistlib.dump(plist, open(path, 'wb'))

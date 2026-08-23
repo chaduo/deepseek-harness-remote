@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type {
   DeepSeekHarnessAdapterOptions,
   WebSocketConstructor,
@@ -179,6 +179,30 @@ describe('DeepSeekHarnessAdapter', () => {
         reasoningEffort: 'max',
       },
     })
+  })
+
+  it('aborts an upstream approval response when /api/respond times out', async () => {
+    vi.useFakeTimers()
+    try {
+      const adapter = adapterWith({
+        timeoutMs: 1_000,
+        fetch: ((_url, init) => new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+        })) as typeof fetch,
+      })
+      const response = adapter.approvalRespond('approval-rpc', {
+        sessionId: 'session_1',
+        rpcId: 'approval-rpc',
+        approvalId: 'approval_1',
+        outcome: 'allowed-once',
+      })
+
+      const expectation = expect(response).rejects.toThrow('upstream /api/respond timed out')
+      await vi.advanceTimersByTimeAsync(1_000)
+      await expectation
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('streams server-request frames from mux WebSocket', async () => {

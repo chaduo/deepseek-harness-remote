@@ -50,5 +50,7 @@ describe('remote capability policy', () => {
       'session.select-model': 'session:prompt',
       'approval.respond': 'approval:respond',
     })
+    expect(isRemoteMethod('session.updateQueue')).toBe(false)
+    expect(isRemoteMethod('session.cancel')).toBe(false)
   })
 })

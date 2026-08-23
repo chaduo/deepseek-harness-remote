@@ -63,8 +63,6 @@ export const REMOTE_METHOD_CAPABILITIES = {
   'session.prompt': 'session:prompt',
   'session.models': 'session:read',
   'session.select-model': 'session:prompt',
-  'session.updateQueue': 'session:prompt',
-  'session.cancel': 'session:steer',
   'approval.respond': 'approval:respond',
   'question.respond': 'question:respond',
 } as const satisfies Record<string, RemoteCapability>

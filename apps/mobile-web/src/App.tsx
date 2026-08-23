@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { buildReviewTimeline, groupSessionsByWorkspace } from '@dsh-remote/domain'
 import type {
   ModelSelection,
@@ -11,9 +12,17 @@ import type {
   SessionSummary,
   WorkspaceSummary,
 } from '@dsh-remote/domain'
+import { innermostReason } from './errors.js'
+import type { UserFeedback } from './errors.js'
 import { useRemote } from './use-remote.js'
+import type { CreateWorkspaceResult } from './use-remote.js'
 
-type Tab = 'hosts' | 'tasks' | 'approval' | 'review' | 'new'
+type Tab = 'hosts' | 'tasks' | 'approval' | 'new'
+
+interface WorkspaceFormError {
+  hint: string
+  reason?: string
+}
 
 const COLLAPSED_WORKSPACES_STORAGE_KEY = 'dsh-remote:collapsed-workspaces'
 const UNGROUPED_WORKSPACE_KEY = '__ungrouped__'
@@ -29,51 +38,129 @@ function storedCollapsedWorkspaces(): Set<string> {
   }
 }
 
+type IconName =
+  | 'tasks'
+  | 'check'
+  | 'history'
+  | 'plus'
+  | 'refresh'
+  | 'search'
+  | 'send'
+  | 'alert'
+  | 'laptop'
+  | 'chevron-left'
+  | 'chevron-right'
+  | 'chevron-down'
+
+// Line icons at DSH's desktop weight; they inherit colour from the control they sit in.
+const ICONS: Record<IconName, ReactNode> = {
+  tasks: <><path d="M4 6h10" /><path d="M4 12h16" /><path d="M4 18h7" /></>,
+  check: <path d="m4.5 12.5 5 5 10-11" />,
+  history: <><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1" /><path d="M3.5 4.5V9.5H8.5" /><path d="M12 7.5V12l3 1.8" /></>,
+  plus: <><path d="M12 5v14" /><path d="M5 12h14" /></>,
+  refresh: <><path d="M20 12a8 8 0 1 1-2.4-5.7" /><path d="M20.5 4.5V10h-5.5" /></>,
+  search: <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></>,
+  send: <><path d="M12 19.5V5" /><path d="m5.5 11.5 6.5-6.5 6.5 6.5" /></>,
+  alert: <><circle cx="12" cy="12" r="9" /><path d="M12 7.5v5.5" /><path d="M12 16.4h.01" /></>,
+  laptop: <><rect x="3.5" y="5" width="17" height="11.5" rx="2" /><path d="M2 19.5h20" /></>,
+  'chevron-left': <path d="m15 5-7 7 7 7" />,
+  'chevron-right': <path d="m9 5 7 7-7 7" />,
+  'chevron-down': <path d="m5 9 7 7 7-7" />,
+}
+
+function Icon(props: { name: IconName }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {ICONS[props.name]}
+    </svg>
+  )
+}
+
 export default function App() {
   const remote = useRemote()
   const [tab, setTab] = useState<Tab>('tasks')
   const [promptText, setPromptText] = useState('')
   const attentionCount = remote.pendingApprovals.length + remote.pendingQuestions.length
   const selectedSession = remote.sessions.find(session => session.sessionId === remote.selectedSessionId) ?? null
+  const previousAttentionRef = useRef(attentionCount)
+
+  useEffect(() => {
+    document.title = attentionCount > 0 ? `(${attentionCount}) DSH Remote` : 'DSH Remote'
+    if (attentionCount > previousAttentionRef.current) {
+      navigator.vibrate?.([120, 80, 120])
+    }
+    previousAttentionRef.current = attentionCount
+    return () => {
+      document.title = 'DSH Remote'
+    }
+  }, [attentionCount])
 
   const openTask = (sessionId: string) => {
     remote.selectSession(sessionId)
     setTab('tasks')
   }
 
+  // Nothing on the other pages is actionable without the Mac, and the phone
+  // holds no Harness of its own, so the disconnected state replaces the body
+  // and the tab bar rather than leaving dead controls behind.
+  const disconnected = remote.connection === 'offline' || remote.retrying
+  // A transport error while the link itself is down repeats what the status
+  // line already says, in rawer words; keep the banner for real RPC failures.
+  const noticeError = remote.connection === 'open' ? remote.error : null
+
   return (
     <div className="app">
       <header className="topbar">
         <div className="topbar-copy">
           <div className="eyebrow">DSH Remote</div>
-          <strong>{pageTitle(tab, selectedSession)}</strong>
+          <h1>{disconnected ? 'Mac 已离线' : pageTitle(tab, selectedSession)}</h1>
           <div className="connection-line">
             <span className={`connection-dot ${remote.connection}`} aria-hidden="true" />
-            {remote.connection === 'open' ? 'Mac 在线' : remote.connection === 'connecting' ? '正在连接 Mac' : '连接中断，自动重试'}
+            {connectionLabel(remote.connection)}
           </div>
         </div>
         <div className="topbar-actions">
-          <button className="icon-button" aria-label="刷新" onClick={() => void remote.refreshAll()}>↻</button>
-          <button className="host-button" onClick={() => setTab('hosts')}>
-            <span>{hostLabel(remote.host)}</span>
-            <span aria-hidden="true">›</span>
-          </button>
+          {!disconnected && (
+            <button className="icon-button" aria-label="刷新" onClick={() => void remote.refreshAll()}>
+              <Icon name="refresh" />
+            </button>
+          )}
         </div>
       </header>
 
-      {(remote.error || remote.gapNotice || remote.connection === 'reconnecting') && (
-        <div className={`notice${remote.connection === 'reconnecting' && remote.error === '' ? ' reconnecting' : ''}`}>
-          {remote.error && <div>{remote.error}</div>}
+      {!disconnected && (noticeError !== null || remote.gapNotice || remote.connection === 'reconnecting') && (
+        <div
+          className={`notice${remote.connection === 'reconnecting' && noticeError === null ? ' reconnecting' : ''}`}
+          role="status"
+          aria-live="polite"
+        >
+          {noticeError !== null && <FeedbackNotice feedback={noticeError} />}
           {remote.gapNotice && <div>{remote.gapNotice}</div>}
-          {remote.connection === 'reconnecting' && remote.error === '' && remote.gapNotice === '' && (
-            <div>网络连接已中断。浏览仍可继续，写操作恢复后再提交。</div>
+          {remote.connection === 'reconnecting' && noticeError === null && remote.gapNotice === '' && (
+            <div>连接中断，正在自动重试。浏览仍可继续，写操作恢复后再提交。</div>
           )}
         </div>
       )}
 
-      <main>
-        {tab === 'hosts' && <HostsView workspaces={remote.workspaces} sessions={remote.visibleSessions} health={remote.health} host={remote.host} onCreateWorkspace={path => void remote.createWorkspace(path)} />}
-        {tab === 'tasks' && (
+      <main className={disconnected ? 'offline' : undefined}>
+        {disconnected && (
+          <OfflineView
+            lastConnectedAt={remote.lastConnectedAt}
+            retrying={remote.retrying}
+            onRetry={remote.retryNow}
+          />
+        )}
+        {!disconnected && tab === 'hosts' && <HostsView workspaceCount={remote.workspaces.length} health={remote.health} host={remote.host} />}
+        {!disconnected && tab === 'tasks' && (
           <TasksView
             sessions={remote.visibleSessions}
             searchResults={remote.searchResults}
@@ -89,16 +176,20 @@ export default function App() {
             setPromptText={setPromptText}
             onSelect={remote.selectSession}
             onNew={() => setTab('new')}
-            onReview={() => setTab('review')}
             onOpenApproval={() => setTab('approval')}
             onSend={remote.sendPrompt}
             sessionModels={remote.sessionModels}
             modelsLoading={remote.modelsLoading}
             onLoadModels={remote.refreshSessionModels}
             onSelectModel={remote.selectSessionModel}
+            historyNotice={remote.historyNotice}
+            loadingOlder={remote.loadingOlder}
+            onLoadOlder={sessionId => void remote.loadOlderHistory(sessionId)}
+            onRefreshHistory={sessionId => void remote.refreshHistory(sessionId)}
+            onCreateWorkspace={remote.createWorkspace}
           />
         )}
-        {tab === 'approval' && (
+        {!disconnected && tab === 'approval' && (
           <ApprovalView
             approvals={remote.pendingApprovals}
             questions={remote.pendingQuestions}
@@ -112,20 +203,7 @@ export default function App() {
             onOpenTask={openTask}
           />
         )}
-        {tab === 'review' && (
-          <ReviewView
-            sessions={remote.visibleSessions}
-            selectedSessionId={remote.selectedSessionId}
-            history={remote.history}
-            historyLoading={remote.historyLoading}
-            loadingOlder={remote.loadingOlder}
-            historyNotice={remote.historyNotice}
-            onSelect={remote.selectSession}
-            onLoadOlder={sessionId => void remote.loadOlderHistory(sessionId)}
-            onRefresh={sessionId => void remote.refreshHistory(sessionId)}
-          />
-        )}
-        {tab === 'new' && (
+        {!disconnected && tab === 'new' && (
           <NewTaskView
             workspaces={remote.workspaces}
             connection={remote.connection}
@@ -138,39 +216,51 @@ export default function App() {
             onSelectModel={remote.selectSessionModel}
             onSend={remote.sendPrompt}
             onComplete={() => setTab('tasks')}
+            onCancel={() => setTab('tasks')}
           />
         )}
       </main>
 
-      <nav className="tabs">
+      {!disconnected && (
+      <nav className="tabs" aria-label="主要导航">
         <TabButton
-          icon="◫"
-          label="Tasks"
+          icon="tasks"
+          label="任务"
           active={tab === 'tasks'}
           onClick={() => {
             if (tab === 'tasks') remote.selectSession(null)
             setTab('tasks')
           }}
         />
-        <TabButton icon="✓" label="Approve" badge={attentionCount} active={tab === 'approval'} onClick={() => setTab('approval')} />
-        <TabButton icon="±" label="记录" active={tab === 'review'} onClick={() => setTab('review')} />
-        <TabButton icon="＋" label="New task" active={tab === 'new'} primary onClick={() => setTab('new')} />
+        <TabButton icon="check" label="待办" badge={attentionCount} active={tab === 'approval'} onClick={() => setTab('approval')} />
+        <TabButton icon="laptop" label="Mac" active={tab === 'hosts'} onClick={() => setTab('hosts')} />
       </nav>
+      )}
+      {!disconnected && tab !== 'new' && !(tab === 'tasks' && selectedSession !== null) && (
+        <button className="new-task-fab" aria-label="新建任务" onClick={() => setTab('new')}>
+          <Icon name="plus" />
+          <span>新任务</span>
+        </button>
+      )}
+      <div className="sr-only" role="status" aria-live="polite">
+        {attentionCount > 0 ? `有 ${attentionCount} 个待办需要处理` : '当前没有待办'}
+      </div>
     </div>
   )
 }
 
-function pageTitle(tab: Tab, selected: SessionSummary | null): string {
-  if (tab === 'hosts') return 'Host 与工作区'
-  if (tab === 'approval') return '等待处理'
-  if (tab === 'review') return '执行记录'
-  if (tab === 'new') return '新任务'
-  return selected?.title ?? '任务'
+function connectionLabel(state: ReturnType<typeof useRemote>['connection']): string {
+  if (state === 'open') return 'Mac 在线'
+  if (state === 'connecting') return '正在连接 Mac'
+  if (state === 'reconnecting') return '连接中断，正在重试'
+  return '已离线'
 }
 
-function hostLabel(host: ReturnType<typeof useRemote>['host']): string {
-  if (host === null) return 'Host'
-  return host.hostId.length > 11 ? `${host.hostId.slice(0, 8)}…` : host.hostId
+function pageTitle(tab: Tab, selected: SessionSummary | null): string {
+  if (tab === 'hosts') return 'Mac 与工作区'
+  if (tab === 'approval') return '等待处理'
+  if (tab === 'new') return '新任务'
+  return selected?.title ?? '任务'
 }
 
 function clientActionId(prefix: string): string {
@@ -180,7 +270,7 @@ function clientActionId(prefix: string): string {
 function TabButton(props: {
   active: boolean
   onClick: () => void
-  icon: string
+  icon: IconName
   label: string
   badge?: number
   primary?: boolean
@@ -189,91 +279,86 @@ function TabButton(props: {
     <button
       className={`tab${props.active ? ' active' : ''}${props.primary === true ? ' primary' : ''}`}
       onClick={props.onClick}
+      aria-current={props.active ? 'page' : undefined}
     >
-      <span className="tab-icon" aria-hidden="true">{props.icon}</span>
+      <span className="tab-icon" aria-hidden="true"><Icon name={props.icon} /></span>
       <span>{props.label}</span>
       {(props.badge ?? 0) > 0 && <span className="tab-badge">{props.badge}</span>}
     </button>
   )
 }
 
+function FeedbackNotice(props: { feedback: UserFeedback }) {
+  return (
+    <div className="feedback-notice">
+      <strong>{props.feedback.summary}</strong>
+      {props.feedback.action !== undefined && <div>{props.feedback.action}</div>}
+      {props.feedback.detail !== undefined && (
+        <details className="reasoning feedback-detail">
+          <summary>技术详情</summary>
+          <div>{props.feedback.detail}</div>
+        </details>
+      )}
+    </div>
+  )
+}
+
+function OfflineView(props: {
+  lastConnectedAt: number | null
+  retrying: boolean
+  onRetry: () => void
+}) {
+  return (
+    <section className="page-section offline-view">
+      <div className="offline-mark" aria-hidden="true"><Icon name="laptop" /></div>
+      {props.lastConnectedAt !== null && <div className="offline-status">最后在线 {relativeTime(props.lastConnectedAt)}</div>}
+      <p className="offline-hint">
+        请确认这台 Mac 已唤醒并连着 Tailscale，DeepSeek Harness 与 Remote Host 都在运行。
+      </p>
+      <button className="offline-retry ghost" disabled={props.retrying} onClick={props.onRetry}>
+        {props.retrying
+          ? <span className="offline-spinner" aria-label="正在重新连接" />
+          : '重新连接'}
+      </button>
+    </section>
+  )
+}
+
 function HostsView(props: {
-  workspaces: WorkspaceSummary[]
-  sessions: SessionSummary[]
+  workspaceCount: number
   health: ReturnType<typeof useRemote>['health']
   host: ReturnType<typeof useRemote>['host']
-  onCreateWorkspace: (path: string) => void
 }) {
-  const [workspacePath, setWorkspacePath] = useState('')
-  const [showWorkspaceForm, setShowWorkspaceForm] = useState(false)
-
   return (
     <section className="page-section">
       <div className="section-heading">
         <div>
           <div className="eyebrow">运行环境</div>
-          <h2>Host</h2>
+          <h2>Mac</h2>
         </div>
       </div>
       {props.host !== null && (
         <div className="card host-card">
           <div className="row">
             <div>
-              <strong>{hostLabel(props.host)}</strong>
+              <strong>这台 Mac</strong>
               <div className="muted path-line">{props.host.cwd}</div>
             </div>
             <span className="status running">在线</span>
           </div>
           <div className="host-stats">
             <div><strong>{props.host.model ?? '-'}</strong><span>模型</span></div>
-            <div><strong>{props.host.attachedSessions}</strong><span>已连接任务</span></div>
-            <div><strong>{props.workspaces.length}</strong><span>工作区</span></div>
+            <div><strong>{props.host.attachedSessions}</strong><span>Harness 已挂载任务</span></div>
+            <div><strong>{props.workspaceCount}</strong><span>工作区</span></div>
           </div>
-          {props.health !== null && (
-            <div className="device-line">当前设备 · {props.health.principal.deviceName ?? props.health.principal.deviceId}</div>
-          )}
-        </div>
-      )}
-      <div className="section-heading row">
-        <div>
-          <div className="eyebrow">项目目录</div>
-          <h2>Workspaces</h2>
-        </div>
-        <button className="ghost small" onClick={() => setShowWorkspaceForm(value => !value)}>
-          {showWorkspaceForm ? '取消' : '添加'}
-        </button>
-      </div>
-      {showWorkspaceForm && (
-        <div className="card workspace-form">
-          <label htmlFor="workspace-path">Mac 上已有目录</label>
-          <input
-            id="workspace-path"
-            value={workspacePath}
-            onChange={event => setWorkspacePath(event.target.value)}
-            placeholder="~/Projects/新目录"
-          />
-          <div className="muted">必须是 Mac 上已存在的目录。</div>
-          <button
-            disabled={workspacePath.trim() === ''}
-            onClick={() => {
-              props.onCreateWorkspace(workspacePath.trim())
-              setWorkspacePath('')
-              setShowWorkspaceForm(false)
-            }}
-          >
-            添加 Workspace
-          </button>
-        </div>
-      )}
-      {props.workspaces.map(workspace => (
-        <div className="card workspace-card" key={workspace.workspaceId}>
-          <div><strong>{workspace.title}</strong></div>
-          <div className="muted path-line">{workspace.path}</div>
-          <div className="workspace-count">
-            {props.sessions.filter(session => session.workspaceId === workspace.workspaceId).length} 个任务
+          <div className="device-line">
+            {props.health !== null && (
+              <div>当前设备 · {props.health.principal.deviceName ?? props.health.principal.deviceId}</div>
+            )}
+            <div>Host · {props.host.hostId}</div>
           </div>
         </div>
-      ))}
+      )}
     </section>
   )
 }
@@ -293,13 +378,17 @@ function TasksView(props: {
   setPromptText: (value: string) => void
   onSelect: (sessionId: string | null) => void
   onNew: () => void
-  onReview: () => void
   onOpenApproval: () => void
   onSend: (sessionId: string, text: string, mode?: 'queue' | 'steer', idempotencyKey?: string) => Promise<boolean>
   sessionModels: SessionModels | null
   modelsLoading: boolean
   onLoadModels: (sessionId: string) => Promise<SessionModels | null>
   onSelectModel: (input: ModelSelection & { sessionId: string }) => Promise<boolean>
+  historyNotice: UserFeedback | null
+  loadingOlder: boolean
+  onLoadOlder: (sessionId: string) => void
+  onRefreshHistory: (sessionId: string) => void
+  onCreateWorkspace: (path: string) => Promise<CreateWorkspaceResult>
 }) {
   const selected = props.sessions.find(session => session.sessionId === props.selectedSessionId) ?? null
   const [searchText, setSearchText] = useState('')
@@ -346,13 +435,16 @@ function TasksView(props: {
           promptText={props.promptText}
           setPromptText={props.setPromptText}
           onBack={() => props.onSelect(null)}
-          onReview={props.onReview}
           onOpenApproval={props.onOpenApproval}
           onSend={(text, mode, idempotencyKey) => props.onSend(selected.sessionId, text, mode, idempotencyKey)}
           sessionModels={props.sessionModels}
           modelsLoading={props.modelsLoading}
           onLoadModels={() => props.onLoadModels(selected.sessionId)}
           onSelectModel={selection => props.onSelectModel({ sessionId: selected.sessionId, ...selection })}
+          historyNotice={props.historyNotice}
+          loadingOlder={props.loadingOlder}
+          onLoadOlder={() => props.onLoadOlder(selected.sessionId)}
+          onRefreshHistory={() => props.onRefreshHistory(selected.sessionId)}
         />
       </section>
     )
@@ -363,18 +455,20 @@ function TasksView(props: {
       <div className="section-heading row">
         <div>
           <div className="eyebrow">最近活动</div>
-          <h2>Tasks</h2>
+          <h2>任务</h2>
         </div>
-        <button onClick={props.onNew}>新任务</button>
       </div>
 
-      <input
-        className="search"
-        value={searchText}
-        onChange={event => setSearchText(event.target.value)}
-        placeholder="搜索任务、目录或 Session ID"
-        aria-label="搜索任务"
-      />
+      <div className="search-field">
+        <Icon name="search" />
+        <input
+          className="search"
+          value={searchText}
+          onChange={event => setSearchText(event.target.value)}
+          placeholder="搜索任务或目录"
+          aria-label="搜索任务"
+        />
+      </div>
 
       {searchText.trim() !== '' && (
         <div className="search-results">
@@ -409,10 +503,13 @@ function TasksView(props: {
               onClick={() => toggleWorkspace(workspaceKey)}
             >
               <span className="group-heading-title">
-                <span className="workspace-disclosure" aria-hidden="true">⌄</span>
-                <span>{group.title}</span>
+                <span className="workspace-disclosure" aria-hidden="true"><Icon name="chevron-down" /></span>
+                <span className="workspace-heading-copy">
+                  <span>{group.title}</span>
+                  {group.path !== undefined && <span>{group.path}</span>}
+                </span>
               </span>
-              <span className="workspace-task-count">{group.sessions.length}</span>
+              <span className="workspace-task-count">{group.sessions.length} 个任务</span>
             </button>
             {!collapsed && (
               <div id={sessionListId}>
@@ -424,11 +521,11 @@ function TasksView(props: {
                   >
                     <span className="task-row-main">
                       <span className={`task-state-dot${session.running ? ' running' : ''}`} aria-hidden="true" />
-                      <span className="session-title">{session.title ?? session.sessionId.slice(0, 13)}</span>
+                      <span className="session-title">{session.title ?? '未命名任务'}</span>
                       {(attentionBySession.get(session.sessionId) ?? 0) > 0 && (
                         <span className="attention-badge">需处理 {attentionBySession.get(session.sessionId)}</span>
                       )}
-                      <span className="chevron" aria-hidden="true">›</span>
+                      <span className="chevron" aria-hidden="true"><Icon name="chevron-right" /></span>
                     </span>
                     <span className="task-row-meta">
                       <span>{session.running ? '运行中' : session.blank ? '尚未开始' : '已暂停'}</span>
@@ -442,20 +539,109 @@ function TasksView(props: {
           </div>
         )
       })}
-      {props.sessions.length === 0 && (
+      {props.sessions.length === 0 && props.workspaces.length === 0 && (
         <div className="empty-state">
           <strong>还没有任务</strong>
-          <span>选择一个 Workspace，直接从手机发起第一项工作。</span>
+          <span>先添加一个工作区，再从手机发起第一项工作。</span>
           <button onClick={props.onNew}>创建任务</button>
         </div>
       )}
+      <WorkspaceForm onCreateWorkspace={props.onCreateWorkspace} />
     </section>
+  )
+}
+
+function WorkspaceForm(props: {
+  onCreateWorkspace: (path: string) => Promise<CreateWorkspaceResult>
+}) {
+  const [workspacePath, setWorkspacePath] = useState('')
+  const [expanded, setExpanded] = useState(false)
+  const [workspaceError, setWorkspaceError] = useState<WorkspaceFormError | null>(null)
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const focusInput = () => window.requestAnimationFrame(() => inputRef.current?.focus())
+  const submitWorkspace = async () => {
+    const path = workspacePath.trim()
+    if (path === '' || creatingWorkspace) return
+    if (!path.startsWith('/') && !path.startsWith('~')) {
+      setWorkspaceError({ hint: '请填写 Mac 上的完整路径，例如 ~/Projects/my-app。' })
+      focusInput()
+      return
+    }
+    setCreatingWorkspace(true)
+    const result = await props.onCreateWorkspace(path)
+    setCreatingWorkspace(false)
+    if (result.ok) {
+      setWorkspaceError(null)
+      setWorkspacePath('')
+      setExpanded(false)
+      return
+    }
+    setWorkspaceError({
+      hint: 'Mac 上没能添加这个目录。请确认它已经存在，然后再试一次。',
+      reason: innermostReason(result.reason),
+    })
+    focusInput()
+  }
+
+  return (
+    <div className="workspace-create-section">
+      <button
+        className="workspace-create-toggle ghost"
+        aria-expanded={expanded}
+        aria-controls="workspace-create-form"
+        onClick={() => {
+          setExpanded(value => !value)
+          setWorkspaceError(null)
+        }}
+      >
+        <Icon name="plus" />
+        <span>{expanded ? '取消添加工作区' : '添加工作区'}</span>
+      </button>
+      {expanded && (
+        <div className="card workspace-form" id="workspace-create-form">
+          <label htmlFor="workspace-path">Mac 上已有目录</label>
+          <input
+            ref={inputRef}
+            id="workspace-path"
+            value={workspacePath}
+            aria-invalid={workspaceError !== null}
+            aria-describedby="workspace-path-help"
+            onChange={event => {
+              setWorkspacePath(event.target.value)
+              setWorkspaceError(null)
+            }}
+            placeholder="~/Projects/新目录"
+          />
+          {workspaceError === null
+            ? <div className="muted" id="workspace-path-help">必须是 Mac 上已存在的目录。</div>
+            : (
+                <div className="field-error" id="workspace-path-help" role="alert">
+                  <span>{workspaceError.hint}</span>
+                  {workspaceError.reason !== undefined && (
+                    <details className="reasoning field-error-detail">
+                      <summary>技术详情</summary>
+                      <div className="field-error-reason">{workspaceError.reason}</div>
+                    </details>
+                  )}
+                </div>
+              )}
+          <button
+            disabled={workspacePath.trim() === '' || creatingWorkspace}
+            onClick={() => void submitWorkspace()}
+          >
+            {creatingWorkspace ? '正在添加…' : '添加工作区'}
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
 
 function sessionTitle(sessions: SessionSummary[], sessionId: string): string {
   const session = sessions.find(item => item.sessionId === sessionId)
-  return session?.title ?? sessionId.slice(0, 13)
+  return session?.title ?? '未命名任务'
 }
 
 function relativeTime(timestamp: number): string {
@@ -478,13 +664,16 @@ function SessionDetail(props: {
   promptText: string
   setPromptText: (value: string) => void
   onBack: () => void
-  onReview: () => void
   onOpenApproval: () => void
   onSend: (text: string, mode: 'queue' | 'steer', idempotencyKey: string) => Promise<boolean>
   sessionModels: SessionModels | null
   modelsLoading: boolean
   onLoadModels: () => Promise<SessionModels | null>
   onSelectModel: (selection: ModelSelection) => Promise<boolean>
+  historyNotice: UserFeedback | null
+  loadingOlder: boolean
+  onLoadOlder: () => void
+  onRefreshHistory: () => void
 }) {
   const nodes = useMemo(() => buildReviewTimeline(props.history?.events ?? []), [props.history])
   const lastMessage = useMemo(
@@ -492,12 +681,10 @@ function SessionDetail(props: {
     [nodes],
   )
   const [messageExpanded, setMessageExpanded] = useState(false)
+  const [detailView, setDetailView] = useState<'conversation' | 'review'>('conversation')
   const [sending, setSending] = useState(false)
   const retryActionRef = useRef<{ fingerprint: string; key: string } | null>(null)
   const messageText = lastMessage?.text ?? ''
-  const messageVisible = messageExpanded || messageText.length <= 280
-    ? messageText
-    : `${messageText.slice(0, 280)}…`
 
   const submit = async (mode: 'queue' | 'steer') => {
     const text = props.promptText.trim()
@@ -517,7 +704,10 @@ function SessionDetail(props: {
 
   return (
     <div className="session-detail">
-      <button className="back-button" onClick={props.onBack}>‹ 返回任务</button>
+      <button className="back-button" onClick={props.onBack}>
+        <Icon name="chevron-left" />
+        <span>返回任务</span>
+      </button>
       <div className="task-hero">
         <div className="row">
           <strong>{props.session.title ?? '未命名任务'}</strong>
@@ -525,15 +715,8 @@ function SessionDetail(props: {
             {props.session.running ? '运行中' : props.session.blank ? '尚未开始' : '已暂停'}
           </span>
         </div>
-        <div className="muted task-path">{props.session.cwd ?? props.session.sessionId}</div>
+        <div className="muted task-path">{props.session.cwd ?? '未设置目录'}</div>
         <div className="task-actions">
-          <button className="review-action ghost" onClick={props.onReview}>
-            <span className="review-action-copy">
-              <strong>查看完整执行过程</strong>
-              <span>完整对话、工具调用、终端输出与执行结果</span>
-            </span>
-            <span className="review-action-arrow" aria-hidden="true">›</span>
-          </button>
           {props.attentionCount > 0 && (
             <button className="attention-action small" onClick={props.onOpenApproval}>
               处理 {props.attentionCount} 个待办
@@ -542,72 +725,104 @@ function SessionDetail(props: {
         </div>
       </div>
 
-      {lastMessage !== undefined && (
-        <div className="last-message">
-          <div className="muted">Agent 最新回复</div>
-          <div className="message-text">{messageVisible}</div>
-          {messageText.length > 280 && (
-            <button className="ghost small" onClick={() => setMessageExpanded(value => !value)}>
-              {messageExpanded ? '收起' : '展开'}
-            </button>
-          )}
-        </div>
-      )}
-
-      {props.historyLoading && props.history === null && <div className="card muted">正在同步任务进度…</div>}
-
-      {lastMessage === undefined && props.historyLoading === false && (
-        <div className="empty-state compact">
-          <strong>{props.session.blank ? '描述你要完成的工作' : '暂无可展示的消息'}</strong>
-          <span>指令会在这台 Mac 上的当前安全策略下执行。</span>
-        </div>
-      )}
-
-      {props.queuedItems.length > 0 && (
-        <div className="queued-box">
-          <div className="muted">已排队（{props.queuedItems.length}）</div>
-          {props.queuedItems.map(item => (
-            <div className="queued-item" key={item.id}>
-              <span className={`badge ${item.placement === 'steering' ? 'assistant' : 'tool'}`}>
-                {item.placement === 'steering' ? '追加' : '排队'}
-              </span>
-              <span>{item.text}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="task-composer">
-        <ModelControls
-          models={props.sessionModels}
-          loading={props.modelsLoading}
-          onLoad={props.onLoadModels}
-          onSelect={props.onSelectModel}
-        />
-        <textarea
-          value={props.promptText}
-          onChange={event => props.setPromptText(event.target.value)}
-          placeholder={props.session.running ? '追加说明或调整方向…' : '发送下一条指令…'}
-          rows={3}
-        />
-        <div className="composer-actions">
-          {props.session.running && (
-            <button
-              className="ghost"
-              disabled={sending || props.promptText.trim() === ''}
-              onClick={() => void submit('queue')}
-            >
-              排到下一轮
-            </button>
-          )}
-          <button
-            disabled={sending || props.promptText.trim() === ''}
-            onClick={() => void submit(props.session.running ? 'steer' : 'queue')}
-          >
-            {sending ? '发送中…' : props.session.running ? '立即追加' : '发送指令'}
-          </button>
-        </div>
+      <div className="detail-segments" aria-label="任务详情视图">
+        <button aria-pressed={detailView === 'conversation'} onClick={() => setDetailView('conversation')}>对话</button>
+        <button aria-pressed={detailView === 'review'} onClick={() => setDetailView('review')}>执行记录</button>
       </div>
+
+      {detailView === 'review'
+        ? (
+            <ReviewView
+              sessionId={props.session.sessionId}
+              history={props.history}
+              historyLoading={props.historyLoading}
+              loadingOlder={props.loadingOlder}
+              historyNotice={props.historyNotice}
+              onLoadOlder={props.onLoadOlder}
+              onRefresh={props.onRefreshHistory}
+            />
+          )
+        : (
+            <>
+              {lastMessage !== undefined && (
+                <div className={`last-message${messageExpanded ? ' expanded' : ' collapsed'}`}>
+                  <div className="last-message-head">
+                    <div className="muted">Agent 最新回复</div>
+                    {messageText.length > 280 && (
+                      <button className="ghost small" onClick={() => setMessageExpanded(value => !value)}>
+                        {messageExpanded ? '收起' : '展开全文'}
+                      </button>
+                    )}
+                  </div>
+                  <div className="last-message-body">
+                    <div className="message-text">{messageText}</div>
+                  </div>
+                </div>
+              )}
+
+              {props.historyLoading && props.history === null && <div className="card loading-card">正在同步任务进度…</div>}
+
+              {lastMessage === undefined && props.historyLoading === false && (
+                <div className="empty-state compact">
+                  <strong>{props.session.blank ? '描述你要完成的工作' : '暂无可展示的消息'}</strong>
+                  <span>指令会在这台 Mac 上的当前安全策略下执行。</span>
+                </div>
+              )}
+
+              {props.queuedItems.length > 0 && (
+                <div className="queued-box">
+                  <div className="muted">已排队（{props.queuedItems.length}）</div>
+                  {props.queuedItems.map(item => (
+                    <div className="queued-item" key={item.id}>
+                      <span className={`badge ${item.placement === 'steering' ? 'assistant' : 'tool'}`}>
+                        {item.placement === 'steering' ? '追加' : '排队'}
+                      </span>
+                      <span>{item.text}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="task-composer">
+                <div className="composer-card">
+                  <textarea
+                    className="composer-input"
+                    value={props.promptText}
+                    onChange={event => props.setPromptText(event.target.value)}
+                    placeholder={props.session.running ? '追加说明或调整方向…' : '发送下一条指令…'}
+                    rows={1}
+                  />
+                  <div className="composer-bar">
+                    <ModelControls
+                      models={props.sessionModels}
+                      loading={props.modelsLoading}
+                      onLoad={props.onLoadModels}
+                      onSelect={props.onSelectModel}
+                    />
+                    <div className="composer-actions">
+                      {props.session.running && (
+                        <button
+                          className="ghost"
+                          disabled={sending || props.promptText.trim() === ''}
+                          onClick={() => void submit('queue')}
+                        >
+                          排到下一轮
+                        </button>
+                      )}
+                      <button
+                        className="composer-send"
+                        disabled={sending || props.promptText.trim() === ''}
+                        onClick={() => void submit(props.session.running ? 'steer' : 'queue')}
+                      >
+                        <Icon name="send" />
+                        <span>{sending ? '发送中…' : props.session.running ? '立即追加' : '发送指令'}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
     </div>
   )
 }
@@ -704,6 +919,7 @@ function NewTaskView(props: {
   onSelectModel: (input: ModelSelection & { sessionId: string }) => Promise<boolean>
   onSend: (sessionId: string, text: string, mode?: 'queue' | 'steer', idempotencyKey?: string) => Promise<boolean>
   onComplete: () => void
+  onCancel: () => void
 }) {
   const [workspaceId, setWorkspaceId] = useState('')
   const [text, setText] = useState('')
@@ -716,6 +932,11 @@ function NewTaskView(props: {
   const createRetryRef = useRef<{ fingerprint: string; key: string } | null>(null)
   const promptRetryRef = useRef<{ fingerprint: string; key: string } | null>(null)
   const effectivePreset = agentPreset || defaultPreset
+  const missingRequirements = [
+    ...(workspaceId === '' ? ['选择工作区'] : []),
+    ...(text.trim() === '' ? ['填写任务说明'] : []),
+  ]
+  const startBlocked = missingRequirements.length > 0 || submitting || presetSelecting || props.connection !== 'open'
 
   const prepareSession = async (): Promise<string | null> => {
     if (createdSessionId !== null) return createdSessionId
@@ -765,8 +986,12 @@ function NewTaskView(props: {
 
   return (
     <section className="page-section new-task-page">
+      <button className="back-button" onClick={props.onCancel}>
+        <Icon name="chevron-left" />
+        <span>返回任务</span>
+      </button>
       <div className="new-task-intro">
-        <div className="new-task-mark" aria-hidden="true">＋</div>
+        <div className="new-task-mark" aria-hidden="true"><Icon name="plus" /></div>
         <div>
           <h2>从手机开始一项工作</h2>
           <p>选择 Mac 上的项目，描述目标；创建后可随时离开页面并继续跟进。</p>
@@ -774,23 +999,26 @@ function NewTaskView(props: {
       </div>
 
       <div className="form-group">
-        <label htmlFor="new-task-workspace">Workspace</label>
+        <label htmlFor="new-task-workspace">工作区</label>
         <select
           id="new-task-workspace"
           value={workspaceId}
+          required
+          aria-required="true"
+          aria-describedby="new-task-workspace-help"
           disabled={submitting || createdSessionId !== null}
           onChange={event => setWorkspaceId(event.target.value)}
         >
-          <option value="" disabled>请选择 Mac 上的 Workspace</option>
+          <option value="" disabled>请选择 Mac 上的工作区</option>
           {props.workspaces.map(workspace => (
             <option key={workspace.workspaceId} value={workspace.workspaceId}>{workspace.title}</option>
           ))}
         </select>
-        <span className="form-hint">
+        <span className="form-hint" id="new-task-workspace-help">
           {workspaceId === ''
             ? props.workspaces.length === 0
-              ? '电脑端尚未配置 Workspace，请先在 DSH 网页端添加。'
-              : '仅可选择已从电脑端同步的 Workspace。'
+              ? '电脑端尚未配置工作区，请先添加工作区。'
+              : '仅可选择已从电脑端同步的工作区。'
             : props.workspaces.find(item => item.workspaceId === workspaceId)?.path}
         </span>
       </div>
@@ -800,6 +1028,7 @@ function NewTaskView(props: {
         <select
           id="new-task-mode"
           value={effectivePreset}
+          aria-describedby="new-task-mode-help"
           disabled={submitting || presetSelecting}
           onChange={event => {
             const next = event.target.value
@@ -820,16 +1049,19 @@ function NewTaskView(props: {
             </option>
           ))}
         </select>
-        <span className="form-hint">
+        <span className="form-hint" id="new-task-mode-help">
           {props.agentPresets.find(preset => preset.id === effectivePreset)?.description ?? '选择这个任务可使用的 Agent 工具组合。'}
         </span>
       </div>
 
       <div className="form-group">
         <label>模型与思考强度</label>
+        {createdSessionId === null && (
+          <span className="form-hint model-preparation-note">此操作会先在 Mac 上准备一个空白任务，再读取可选模型。</span>
+        )}
         {createdSessionId === null ? (
           <button className="model-setup-button ghost" disabled={workspaceId === '' || submitting || presetSelecting || props.connection !== 'open'} onClick={() => void configureModels()}>
-            {submitting ? '正在准备 Session…' : '设置模型与思考强度'}
+            {submitting ? '正在准备任务…' : '准备任务并设置模型'}
           </button>
         ) : (
           <ModelControls
@@ -839,7 +1071,7 @@ function NewTaskView(props: {
             onSelect={selection => props.onSelectModel({ sessionId: createdSessionId, ...selection })}
           />
         )}
-        <span className="form-hint">不设置时沿用 Harness 默认值；准备后选择会立即写入这个 Session。</span>
+        <span className="form-hint">不设置时沿用 Harness 默认值；准备后选择会立即写入这个任务。</span>
       </div>
 
       <div className="form-group">
@@ -847,18 +1079,21 @@ function NewTaskView(props: {
         <textarea
           id="new-task-prompt"
           value={text}
+          required
+          aria-required="true"
+          aria-describedby="new-task-prompt-help"
           onChange={event => setText(event.target.value)}
           placeholder="例如：检查手机端断线重连逻辑，修复问题并运行相关测试"
           rows={8}
         />
-        <span className="form-hint">写清目标、约束和完成标准，后续仍可继续追加指令。</span>
+        <span className="form-hint" id="new-task-prompt-help">写清目标、约束和完成标准，后续仍可继续追加指令。</span>
       </div>
 
       {createdSessionId !== null && (
         <div className="retry-note">
           {promptAttempted
-            ? 'Session 已创建。再次提交会继续使用同一个 Session，不会重复创建。'
-            : '模型设置已绑定到一个空白 Session；发送任务时会继续使用它。'}
+            ? '任务已创建。再次提交会继续使用同一个任务，不会重复创建。'
+            : '模型设置已绑定到一个空白任务；发送说明时会继续使用它。'}
         </div>
       )}
       {props.connection !== 'open' && (
@@ -867,11 +1102,21 @@ function NewTaskView(props: {
 
       <button
         className="start-task-button"
-        disabled={workspaceId === '' || text.trim() === '' || submitting || presetSelecting || props.connection !== 'open'}
-        onClick={() => void submit()}
+        aria-disabled={startBlocked}
+        aria-describedby="start-task-requirements"
+        onClick={() => {
+          if (!startBlocked) void submit()
+        }}
       >
         {submitting ? '正在启动…' : promptAttempted ? '重试发送任务' : '在 Mac 上开始任务'}
       </button>
+      <div className="start-task-requirements" id="start-task-requirements" role="status">
+        {missingRequirements.length > 0
+          ? `还需要：${missingRequirements.join('、')}`
+          : props.connection !== 'open'
+            ? 'Mac 重新在线后即可开始任务。'
+            : '必填信息已完整，可以开始任务。'}
+      </div>
     </section>
   )
 }
@@ -912,9 +1157,15 @@ function ApprovalView(props: {
 
       {total === 0 && (
         <div className="empty-state approval-empty">
-          <span className="empty-check" aria-hidden="true">✓</span>
-          <strong>都处理完了</strong>
+          <span className="empty-check" aria-hidden="true"><Icon name="check" /></span>
           <span>Agent 需要权限或补充信息时，会显示在这里。</span>
+        </div>
+      )}
+
+      {props.resolvedApprovals[0] !== undefined && (
+        <div className="approval-confirmation" role="status" aria-live="polite">
+          {props.resolvedApprovals[0].outcome === 'allowed-once' ? '已允许一次' : '已拒绝'} · {' '}
+          {props.resolvedApprovals[0].display?.toolTitle ?? props.resolvedApprovals[0].request.toolName}
         </div>
       )}
 
@@ -925,14 +1176,13 @@ function ApprovalView(props: {
         return (
           <div className="card attention-card" key={request.approvalId}>
             <div className="attention-card-head">
-              <span className="attention-icon" aria-hidden="true">!</span>
+              <span className="attention-icon" aria-hidden="true"><Icon name="alert" /></span>
               <div>
-                <div className="eyebrow">Permission requested</div>
                 <strong>{display?.toolTitle ?? request.toolName}</strong>
               </div>
             </div>
             <button className="context-link" onClick={() => props.onOpenTask(request.sessionId)}>
-              打开关联任务 <span aria-hidden="true">›</span>
+              打开关联任务 <Icon name="chevron-right" />
             </button>
             <div className="approval-reason">{request.reason ?? 'Agent 请求执行此操作'}</div>
             {display?.argumentsText !== undefined && (
@@ -964,10 +1214,15 @@ function ApprovalView(props: {
       {props.questions.map(request => {
         const draft = props.questionDrafts[request.rpcId] ?? []
         const busy = pendingAction === `question:${request.rpcId}`
+        const allAnswered = request.questions.every(question => {
+          const answer = draft.find(item => item.id === question.id)
+          const custom = customAnswers[`${request.rpcId}:${question.id}`]?.trim() ?? ''
+          return (answer?.selected.length ?? 0) > 0 || custom !== ''
+        })
         return (
           <div className="card attention-card question-card" key={request.rpcId}>
             <button className="context-link" onClick={() => props.onOpenTask(request.sessionId)}>
-              打开关联任务 <span aria-hidden="true">›</span>
+              打开关联任务 <Icon name="chevron-right" />
             </button>
             {request.questions.map(question => {
               const answer = draft.find(item => item.id === question.id)
@@ -983,6 +1238,7 @@ function ApprovalView(props: {
                         <button
                           className={`option${active ? ' active' : ''}`}
                           key={option.label}
+                          aria-pressed={active}
                           onClick={() => {
                             const nextSelected = question.multiSelect === true
                               ? (active
@@ -1001,6 +1257,7 @@ function ApprovalView(props: {
                     })}
                   </div>
                   <input
+                    aria-label={`${question.header ?? question.question}的自定义答案`}
                     placeholder="自定义答案（可选）"
                     value={customAnswers[`${request.rpcId}:${question.id}`] ?? ''}
                     onChange={event => setCustomAnswers(previous => ({
@@ -1012,7 +1269,8 @@ function ApprovalView(props: {
               )
             })}
             <button
-              disabled={pendingAction !== null}
+              disabled={pendingAction !== null || !allAnswered}
+              aria-describedby={`question-requirement-${request.rpcId}`}
               onClick={() => void runAction(`question:${request.rpcId}`, async () => {
                 const answers = draft.map(answer => {
                   const customValue = customAnswers[`${request.rpcId}:${answer.id}`]?.trim()
@@ -1027,6 +1285,11 @@ function ApprovalView(props: {
             >
               {busy ? '提交中…' : '提交回答'}
             </button>
+            {!allAnswered && (
+              <div className="question-requirement" id={`question-requirement-${request.rpcId}`} role="status">
+                请先为每个问题选择一项或填写自定义答案。
+              </div>
+            )}
           </div>
         )
       })}
@@ -1055,20 +1318,20 @@ function selectedValues(selected: Set<string>, label: string, remove: boolean): 
   return next
 }
 
-type ReviewFilter = 'all' | 'messages' | 'tools' | 'changes' | 'status'
+type ReviewFilter = 'conversation' | 'messages' | 'tools' | 'changes' | 'status'
 
 function ReviewView(props: {
-  sessions: SessionSummary[]
-  selectedSessionId: string | null
+  sessionId: string
   history: SessionHistoryPage | null
   historyLoading: boolean
   loadingOlder: boolean
-  historyNotice: string
-  onSelect: (sessionId: string | null) => void
-  onLoadOlder: (sessionId: string) => void
-  onRefresh: (sessionId: string) => void
+  historyNotice: UserFeedback | null
+  onLoadOlder: () => void
+  onRefresh: () => void
 }) {
-  const [filter, setFilter] = useState<ReviewFilter>('all')
+  const [filter, setFilter] = useState<ReviewFilter>('conversation')
+  const timelineRef = useRef<HTMLDivElement>(null)
+  const autoScrolledSessionRef = useRef<string | null>(null)
   const nodes = useMemo(
     () => buildReviewTimeline(props.history?.events ?? []),
     [props.history],
@@ -1076,6 +1339,10 @@ function ReviewView(props: {
   const filtered = useMemo(
     () => nodes.filter(node => reviewNodeMatches(node, filter)),
     [nodes, filter],
+  )
+  const internalNodes = useMemo(
+    () => nodes.filter(node => node.kind === 'status' || node.kind === 'raw'),
+    [nodes],
   )
   const finalSeq = useMemo(() => {
     for (let index = nodes.length - 1; index >= 0; index -= 1) {
@@ -1086,59 +1353,49 @@ function ReviewView(props: {
     }
     return undefined
   }, [nodes])
-  const sessions = useMemo(
-    () => [...props.sessions].sort((a, b) => b.updatedAt - a.updatedAt),
-    [props.sessions],
-  )
   const eventCount = props.history?.events.length ?? 0
   const firstSeq = props.history?.events[0]?.sequence
 
-  return (
-    <section>
-      <h2>执行记录</h2>
+  useEffect(() => {
+    if (eventCount === 0 || props.historyLoading || autoScrolledSessionRef.current === props.sessionId) return
+    autoScrolledSessionRef.current = props.sessionId
+    const frame = window.requestAnimationFrame(() => {
+      const userMessages = timelineRef.current?.querySelectorAll('.review-card.message.user')
+      const content = timelineRef.current?.querySelectorAll('.review-card.message, .review-card.tool')
+      const target = userMessages !== undefined && userMessages.length > 0
+        ? userMessages.item(userMessages.length - 1)
+        : content?.item((content?.length ?? 0) - 1)
+      target?.scrollIntoView({ block: 'start' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [eventCount, props.historyLoading, props.sessionId])
 
+  return (
+    <section className="review-view">
       <div className="review-toolbar">
-        <select
-          value={props.selectedSessionId ?? ''}
-          onChange={event => props.onSelect(event.target.value === '' ? null : event.target.value)}
-          aria-label="选择 session"
-        >
-          <option value="">选择 session…</option>
-          {sessions.map(session => (
-            <option value={session.sessionId} key={session.sessionId}>
-              {session.title ?? session.sessionId.slice(0, 13)}
-            </option>
-          ))}
-        </select>
         <select value={filter} onChange={event => setFilter(event.target.value as ReviewFilter)} aria-label="筛选执行记录">
-          <option value="all">全部</option>
+          <option value="conversation">对话与工具</option>
           <option value="messages">消息</option>
           <option value="tools">工具</option>
           <option value="changes">文件与测试</option>
-          <option value="status">状态</option>
+          <option value="status">内部事件</option>
         </select>
         <button
           className="ghost small"
-          disabled={props.selectedSessionId === null || props.historyLoading}
-          onClick={() => {
-            if (props.selectedSessionId !== null) props.onRefresh(props.selectedSessionId)
-          }}
+          disabled={props.historyLoading}
+          onClick={props.onRefresh}
         >
           刷新
         </button>
       </div>
 
-      {props.historyNotice !== '' && <div className="review-notice">{props.historyNotice}</div>}
+      {props.historyNotice !== null && <div className="review-notice"><FeedbackNotice feedback={props.historyNotice} /></div>}
 
-      {props.selectedSessionId === null && (
-        <div className="card muted">先在 Tasks 或上方下拉框选择一个 session。</div>
+      {props.historyLoading && props.history === null && (
+        <div className="card loading-card">加载历史中…</div>
       )}
 
-      {props.selectedSessionId !== null && props.historyLoading && props.history === null && (
-        <div className="card muted">加载历史中…</div>
-      )}
-
-      {props.selectedSessionId !== null && props.historyLoading === false && eventCount === 0 && (
+      {props.historyLoading === false && eventCount === 0 && (
         <div className="card muted">暂无事件</div>
       )}
 
@@ -1146,10 +1403,7 @@ function ReviewView(props: {
         <button
           className="ghost load-older"
           disabled={props.loadingOlder}
-          onClick={() => {
-            const history = props.history
-            if (history !== null) props.onLoadOlder(history.sessionId)
-          }}
+          onClick={props.onLoadOlder}
         >
           {props.loadingOlder ? '加载中…' : `加载更早（当前从 #${firstSeq ?? 0} 开始）`}
         </button>
@@ -1157,19 +1411,27 @@ function ReviewView(props: {
 
       {eventCount > 0 && (
         <div className="muted review-summary">
-          已折叠 {eventCount.toLocaleString()} 个原始事件为 {filtered.length.toLocaleString()} 条轨迹节点
+          {eventCount.toLocaleString()} 个原始事件折叠为 {nodes.length.toLocaleString()} 条记录；当前显示 {filtered.length.toLocaleString()} 条
         </div>
       )}
 
-      <div className="timeline">
+      <div className="timeline" ref={timelineRef}>
         {filtered.map(node => <ReviewNodeView key={`${node.kind}:${node.seq}`} node={node} final={node.kind === 'message' && node.seq === finalSeq} />)}
+        {filter === 'conversation' && internalNodes.length > 0 && (
+          <details className="internal-events">
+            <summary>内部事件（{internalNodes.length}）</summary>
+            {internalNodes.map(node => (
+              <ReviewNodeView key={`internal:${node.kind}:${node.seq}`} node={node} final={false} />
+            ))}
+          </details>
+        )}
       </div>
     </section>
   )
 }
 
 function reviewNodeMatches(node: ReviewNode, filter: ReviewFilter): boolean {
-  if (filter === 'all') return true
+  if (filter === 'conversation') return node.kind === 'message' || node.kind === 'tool'
   if (filter === 'messages') return node.kind === 'message'
   if (filter === 'tools') return node.kind === 'tool'
   if (filter === 'changes') {
@@ -1177,7 +1439,7 @@ function reviewNodeMatches(node: ReviewNode, filter: ReviewFilter): boolean {
     const card = toolCardFor(node)
     return card === 'terminal' || card === 'diff' || card === 'read' || card === 'search'
   }
-  return node.kind === 'status'
+  return node.kind === 'status' || node.kind === 'raw'
 }
 
 function ReviewNodeView(props: { node: ReviewNode; final: boolean }) {
@@ -1206,7 +1468,7 @@ function MessageCard(props: { node: ReviewMessageNode; final: boolean }) {
           <span className={`badge ${node.role}`}>{node.role === 'user' ? '用户' : props.final ? '最终结论' : node.partial === true ? 'Agent · 进行中' : 'Agent'}</span>
           <span className="muted">#{node.seq} · {new Date(node.timestamp).toLocaleTimeString()}</span>
         </button>
-        <button className="ghost small" onClick={() => void copyText(node.text)}>复制</button>
+        <CopyButton value={node.text} label="复制" />
       </div>
       {node.reasoning !== undefined && (
         <details className="reasoning">
@@ -1244,11 +1506,12 @@ function ToolCard(props: { node: ReviewToolNode }) {
   const [expanded, setExpanded] = useState(false)
   const card = toolCardFor(node)
   const cardName = card === undefined ? node.name : card
-  const status = node.resultText !== undefined
-    ? node.resultIsError === true ? '失败' : '完成'
-    : '运行中'
+  const statusKey = node.resultText !== undefined
+    ? node.resultIsError === true ? 'error' : 'done'
+    : 'running'
+  const status = statusKey === 'error' ? '失败' : statusKey === 'done' ? '完成' : '运行中'
   return (
-    <div className={`review-card tool status-${status}`}>
+    <div className={`review-card tool status-${statusKey}`}>
       <div className="review-card-head">
         <button className="review-head-button" onClick={() => setExpanded(value => !value)}>
           <span className="badge tool">{cardName}</span>
@@ -1286,7 +1549,7 @@ function TerminalDetail(props: { node: ReviewToolNode; view: ViewRecord }) {
       <div className="status-pills">
         {exitCode !== undefined && <span className={`status-pill ${exitCode === '0' ? 'ok' : 'bad'}`}>exit {exitCode}</span>}
         {signal !== undefined && <span className="status-pill bad">{signal}</span>}
-        <button className="ghost small" onClick={() => void copyText(output)}>复制输出</button>
+        <CopyButton value={output} label="复制输出" />
       </div>
       <pre className="preview">{capped ? `${output.slice(0, 12000)}\n…` : output}</pre>
       {capped && <div className="muted">输出过长，仅显示前 12000 字符</div>}
@@ -1434,7 +1697,7 @@ function RawRow(props: { node: Extract<ReviewNode, { kind: 'raw' }> }) {
         <span className="muted">{node.label}</span>
         <span className="muted">#{node.seq}</span>
       </summary>
-      <pre className="preview">{formatUnknown(node.payload)}</pre>
+      <pre className="preview">{formatUnknown({ type: node.eventType, payload: node.payload })}</pre>
     </details>
   )
 }
@@ -1470,7 +1733,26 @@ function formatUnknown(value: unknown): string {
   }
 }
 
-function copyText(value: string): Promise<void> {
-  if (navigator.clipboard === undefined) return Promise.resolve()
-  return navigator.clipboard.writeText(value)
+function CopyButton(props: { value: string; label: string }) {
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
+
+  const copy = async () => {
+    if (navigator.clipboard === undefined) {
+      setState('failed')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(props.value)
+      setState('copied')
+      window.setTimeout(() => setState('idle'), 1600)
+    } catch {
+      setState('failed')
+    }
+  }
+
+  return (
+    <button className="ghost small" onClick={() => void copy()} aria-live="polite">
+      {state === 'copied' ? '已复制' : state === 'failed' ? '复制失败' : props.label}
+    </button>
+  )
 }

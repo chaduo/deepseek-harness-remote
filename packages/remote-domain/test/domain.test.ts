@@ -46,6 +46,20 @@ describe('remote domain', () => {
     expect(groups.map(group => group.sessions.length)).toEqual([1, 1, 1])
   })
 
+  it('keeps empty workspaces visible as zero-task groups', () => {
+    const groups = groupSessionsByWorkspace(
+      [],
+      [{ workspaceId: 'ws_empty', path: '/empty', title: 'Empty', sessionIds: [], createdAt: '', updatedAt: '' }],
+    )
+
+    expect(groups).toEqual([{
+      workspaceId: 'ws_empty',
+      title: 'Empty',
+      path: '/empty',
+      sessions: [],
+    }])
+  })
+
   it('matches desktop visibility by hiding blank, archived, and subagent sessions', () => {
     const visible = visibleTaskSessions(
       [

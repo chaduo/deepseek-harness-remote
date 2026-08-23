@@ -228,7 +228,6 @@ const CONTROL_LABELS: Record<string, (payload: unknown) => { label: string; deta
   'session/title': payload => ({ label: '会话标题', detail: asString(asRecord(payload)?.title) ?? '' }),
   'request/header': () => ({ label: '请求上下文', detail: 'header' }),
   'request/context': () => ({ label: '请求上下文', detail: 'context' }),
-  'agent/inbox/spliced': () => ({ label: '消息追加', detail: 'next-turn' }),
 }
 
 export function controlStatusFor(eventType: string, payload: unknown): { label: string; detail: string } | undefined {
@@ -257,7 +256,7 @@ function foldStepChunks(events: SessionEventView[]): FoldedStep {
 }
 
 function rawLabel(eventType: string): string {
-  return eventType.split('/').at(-1) ?? eventType
+  return '未知事件'
 }
 
 function messageNode(
@@ -268,7 +267,12 @@ function messageNode(
 ): ReviewMessageNode | undefined {
   const parts = role === 'assistant'
     ? messageParts(payload)
-    : { text: textFromBlocks(asRecord(asRecord(payload)?.message)?.content), reasoning: '' }
+    : {
+        text: textFromBlocks(
+          asRecord(payload)?.content ?? asRecord(asRecord(payload)?.message)?.content,
+        ),
+        reasoning: '',
+      }
   if (parts.text === '' && parts.reasoning === '') return undefined
   const node: ReviewMessageNode = {
     kind: 'message',
@@ -284,6 +288,13 @@ function messageNode(
   if (turn !== undefined) node.turn = turn
   if (step !== undefined) node.step = step
   return node
+}
+
+function isUserAuthoredMessage(payload: unknown): boolean {
+  const source = asRecord(asRecord(payload)?.source)
+    ?? asRecord(asRecord(asRecord(payload)?.message)?.source)
+  const kind = asString(source?.kind)
+  return kind === undefined || kind === 'user'
 }
 
 /**
@@ -345,8 +356,38 @@ export function buildReviewTimeline(events: readonly SessionEventView[]): Review
         break
       }
       case 'user/message': {
+        if (isUserAuthoredMessage(event.payload)) {
+          const node = messageNode('user', event.payload, event)
+          if (node !== undefined) nodes.push(node)
+        } else {
+          nodes.push({
+            kind: 'status',
+            eventType: event.type,
+            label: '系统上下文',
+            detail: asString(asRecord(asRecord(event.payload)?.source)?.kind) ?? '',
+            payload: event.payload,
+            seq: event.sequence,
+            timestamp: event.timestamp,
+          })
+        }
+        break
+      }
+      case 'message/append':
+      case 'agent/inbox/spliced': {
         const node = messageNode('user', event.payload, event)
-        if (node !== undefined) nodes.push(node)
+        if (node !== undefined) {
+          nodes.push(node)
+        } else {
+          nodes.push({
+            kind: 'status',
+            eventType: event.type,
+            label: '用户追加了消息',
+            detail: '',
+            payload: event.payload,
+            seq: event.sequence,
+            timestamp: event.timestamp,
+          })
+        }
         break
       }
       case 'assistant/message': {

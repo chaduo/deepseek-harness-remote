@@ -1,82 +1,35 @@
 # DSH Remote
 
-Control a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent running on your Mac from your phone, over your private Tailscale network (tailnet).
+[![CI](https://github.com/Zouu-X/dsh_remote/actions/workflows/ci.yml/badge.svg)](https://github.com/Zouu-X/dsh_remote/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> **Independent community project.** DSH Remote is not affiliated with or endorsed by DeepSeek.
->
-> **Status:** early single-user release. It is functional on your own Mac, but it is not a multi-user SaaS product.
+**Run DeepSeek Harness on your Mac. Control it from your phone.**
+
+DSH Remote gives [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) a focused, mobile-first workspace over your private Tailscale network. Start tasks away from your desk, follow the Agent live, handle approvals, and review the result without exposing Harness to the public internet.
 
 [中文说明](README.zh-CN.md)
 
-## What it does
+<!-- README_MEDIA_SLOT:HERO -->
 
-DSH Remote keeps DeepSeek Harness bound to `127.0.0.1` on your Mac and puts a mobile-friendly PWA in front of it through a private Tailscale connection:
+## What you can do
 
-- Mobile pages for **Hosts**, **Tasks**, **Approvals**, and **Review**
-- Create workspaces and sessions, send prompts, steer running sessions
-- Real-time agent messages, tool calls, terminal output, diffs, and test results
-- Answer agent questions and approve/reject one-shot permission requests
-- Offline PWA shell with reconnect handling, event de-duplication, and gap backfill
-- User-level LaunchAgent that starts with the Mac and follows a manually managed Harness
-- Device identity derived from Tailscale peers, with an optional device allowlist
+- Start a task in any workspace already configured on your Mac.
+- Choose the Agent preset, model, and reasoning effort before you begin.
+- Follow Agent messages, tool calls, terminal output, diffs, and test results live.
+- Queue the next instruction or steer a running session from the task composer.
+- Answer Agent questions and allow or reject one-time permission requests.
+- Search and resume existing tasks from a phone-friendly workspace view.
+- Install the site on your home screen as a PWA with automatic reconnect handling.
 
-## Architecture
+## Install
 
-```text
-Phone PWA
-  │  HTTPS/WSS over Tailscale
-  ▼
-Tailscale Serve on Mac  (https://<your-mac>.<your-tailnet>.ts.net:443)
-  │  TLS termination + PROXY protocol
-  ▼
-Remote Host Adapter  127.0.0.1:3090  (mobile UI + versioned remote RPC/events)
-  │  allowlisted methods only
-  ▼
-DeepSeek Harness Adapter
-  │
-  ▼
-DeepSeek Harness Web  127.0.0.1:3080  (loopback only)
-  ▼
-Workspaces / Agent loop / Shell / Files
-```
+You need:
 
-## Security model
+- a Mac with a configured DeepSeek Harness credential;
+- Tailscale on the Mac and phone, signed in to the same tailnet;
+- MagicDNS enabled for that tailnet.
 
-- DeepSeek Harness and the Remote Host Adapter listen on loopback only. Nothing is bound to `0.0.0.0` and nothing is exposed to the public internet.
-- Only Tailscale Serve reaches the Remote Host Adapter.
-- `--trusted-host` on Harness is treated as reachability/origin protection, not authentication.
-- Client-supplied identity headers are never trusted. The source IP is taken from Tailscale Serve's PROXY protocol line and resolved through `tailscale status --json`.
-- Only a fixed set of remote RPC methods is proxied. Privileged loopback-only methods (`settings.*`, `credentials.*`, file/directory pickers, preset mutations) always return `forbidden`.
-- Device private keys are stored in the macOS Keychain. The DeepSeek API key is never read, logged, or moved by this project; it stays in Harness' own credential file.
-- Device revocation, QR pairing, cloud relay, and push notifications are **not** part of this release. Protect your tailnet accordingly.
-
-## Prerequisites
-
-- macOS (this project uses LaunchAgents, Keychain, and `caffeinate`)
-- Node.js 24+ and pnpm 11 (`corepack enable` is usually enough)
-- DeepSeek Harness with your DeepSeek API credential configured (see the [DeepSeek Harness repository](https://github.com/deepseek-ai/deepseek-harness)). DSH Remote never touches that credential.
-- **Tailscale on both the Mac and the phone, signed in to the same tailnet, with MagicDNS enabled.** This is mandatory: the phone connects through your private Tailscale network, never through the public internet.
-- A phone with Tailscale installed and signed in to the same tailnet
-
-## One-command setup (recommended)
-
-### 1. Install and sign in to Tailscale
-
-On your Mac:
-
-```bash
-brew install --cask tailscale
-open -a Tailscale
-tailscale up
-```
-
-If the `tailscale` command is not available after installation, open the Tailscale app and sign in from its menu bar icon.
-
-On your phone, install Tailscale from the App Store / Play Store and sign in to the same account.
-
-In the [Tailscale admin console](https://login.tailscale.com/admin/dns), make sure **MagicDNS** is enabled for your tailnet.
-
-### 2. Clone and run the setup script
+### 1. Run the guided setup
 
 ```bash
 git clone https://github.com/Zouu-X/dsh_remote.git dsh-remote
@@ -84,197 +37,229 @@ cd dsh-remote
 ./macos/launch-agent/setup.sh
 ```
 
-The script checks/installs prerequisites, signs in Tailscale, installs dependencies, builds the PWA, installs the Remote Host LaunchAgent in manual-Harness follow mode, configures Tailscale Serve, and prints your phone URL.
+The setup checks the Mac environment, installs project dependencies, builds the mobile app, installs the user LaunchAgent, configures Tailscale Serve, and prints the phone URL. If Node.js or Tailscale is missing and Homebrew is available, it offers the standard installation path.
 
-### 3. Start DeepSeek Harness manually
+### 2. Start DeepSeek Harness
 
-The setup script prints the exact command for your Mac. It looks like:
+The setup prints the exact command for your Mac. It looks like:
 
 ```bash
 npx @deepseek-ai/dsh web --trusted-host <your-mac>.<your-tailnet>.ts.net
 ```
 
-Keep it running. The Remote Host LaunchAgent follows `127.0.0.1:3080` automatically.
+Keep Harness running. DSH Remote follows it automatically and becomes available whenever Harness is listening on `127.0.0.1:3080`.
 
-### 4. Open the app on your phone
+### 3. Open it on your phone
 
-Open the printed `https://<your-mac>.<your-tailnet>.ts.net` URL on your phone and add it to the home screen.
+Open the URL printed by setup:
 
----
+```text
+https://<your-mac>.<your-tailnet>.ts.net
+```
 
-## Manual quick start
+Add it to the home screen for an app-like launch experience.
 
-### 1. Install dependencies and build
+## A phone workflow that stays out of the way
+
+1. Open **New task** and select a workspace.
+2. Pick the work mode and, when needed, the model and reasoning effort.
+3. Send the task and watch the Agent work in real time.
+4. Handle questions and one-time approvals from **Approvals**.
+5. Open **Review** to inspect the conversation, tools, terminal output, diffs, and tests.
+6. Continue the same task later from **Tasks**.
+
+<!-- README_MEDIA_SLOT:WORKFLOW_DEMO -->
+
+## Private by design
+
+DSH Remote keeps the sensitive part of the stack on your Mac:
+
+- DeepSeek Harness listens only on `127.0.0.1:3080`.
+- The Remote Host listens only on `127.0.0.1:3090`.
+- Tailscale Serve provides the private HTTPS entrypoint; Tailscale Funnel is never used.
+- The Remote Host resolves the real Tailscale peer from the trusted loopback proxy connection instead of trusting browser-supplied identity headers.
+- Only the remote task methods listed below are available. Credentials, settings, local file pickers, and preset authoring remain local-only.
+- The DeepSeek API credential stays in Harness' own credential file and is never read by DSH Remote.
+- The Remote Host device private key is stored in macOS Keychain.
+
+DSH Remote is designed for a personal Mac and a private, single-user tailnet. You can restrict access to specific phone devices with the included allowlist manager.
+
+## Restrict access to your phone
+
+By default, devices already authenticated to your tailnet can reach the Remote Host. To allow only selected devices:
 
 ```bash
-git clone https://github.com/Zouu-X/dsh_remote.git dsh-remote
-cd dsh-remote
+# Find the phone's Tailscale node ID.
+tailscale status
+
+# Add the phone to the allowlist.
+macos/launch-agent/devices.sh add <tailscale-device-id>
+
+# Inspect the active allowlist.
+macos/launch-agent/devices.sh list
+```
+
+Changes take effect immediately after the LaunchAgent restarts. Removing the final allowed device is refused so an edit cannot silently widen access. To intentionally return to tailnet-wide access, run:
+
+```bash
+macos/launch-agent/devices.sh allow-all
+```
+
+## Everyday operation
+
+The installed user LaunchAgent starts at login and waits for Harness. When Harness starts, DSH Remote comes online; when Harness stops, the Remote Host follows it down. With the default `auto` wake policy, macOS stays awake only while a Harness session is running.
+
+Useful commands:
+
+```bash
+# Confirm both local services.
+lsof -nP -iTCP:3080 -sTCP:LISTEN
+lsof -nP -iTCP:3090 -sTCP:LISTEN
+
+# Check the local Remote Host.
+curl http://127.0.0.1:3090/api/health
+
+# Inspect Tailscale Serve.
+tailscale serve status
+
+# Follow logs.
+tail -f ~/.dsh-remote/logs/remote-host.err.log
+```
+
+To uninstall the LaunchAgents:
+
+```bash
+macos/launch-agent/uninstall.sh
+```
+
+## Manual setup
+
+Use this path when you want to control each step yourself.
+
+### Build
+
+```bash
 corepack pnpm install
 corepack pnpm -r build
 ```
 
-### 2. Find your Mac's Tailscale hostname
+### Resolve the MagicDNS hostname
 
 ```bash
 DSH_TS_HOST=$(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')
 echo "$DSH_TS_HOST"
 ```
 
-You should see something like `your-mac.your-tailnet.ts.net`.
-
-### 3. Start DeepSeek Harness on loopback
-
-In a dedicated terminal:
+### Start Harness and install the Remote Host
 
 ```bash
 npx @deepseek-ai/dsh web --trusted-host "$DSH_TS_HOST"
 ```
 
-Keep it running. The LaunchAgent intentionally follows your manually managed Harness. If you prefer automatic supervision instead, see [Harness supervisor](#optional-harness-supervisor).
-
-### 4. Install the Remote Host LaunchAgent
+In another terminal:
 
 ```bash
 macos/launch-agent/install.sh
-```
-
-This installs a user-level LaunchAgent (not a root daemon). It waits for Harness on `127.0.0.1:3080`, then starts the Remote Host Adapter on `127.0.0.1:3090`.
-
-### 5. Point Tailscale Serve at the Remote Host
-
-```bash
-# Optional: turn off an older HTTPS serve entry first.
-tailscale serve --https=443 off 2>/dev/null || true
-
-tailscale serve --bg --yes --tls-terminated-tcp=443 --proxy-protocol=1 3090
+macos/launch-agent/configure-tailscale-serve.sh
 tailscale serve status
 ```
 
-You can use the included helper instead:
-
-```bash
-macos/launch-agent/configure-tailscale-serve.sh
-```
-
-### 6. Open the app on your phone
-
-On a phone connected to the same tailnet, open:
-
-```text
-https://<your-mac>.<your-tailnet>.ts.net
-```
-
-Add it to the home screen to use it as a PWA.
-
-## Device allowlist
-
-By default every device signed in to your tailnet can reach the Remote Host. For a stricter setup, allow only your phone:
-
-```bash
-# Find the phone's Tailscale node ID.
-tailscale status
-
-# Allow one device by its node ID.
-macos/launch-agent/devices.sh add <tailscale-device-id>
-
-# Show the current allowlist.
-macos/launch-agent/devices.sh list
-
-# Go back to "allow every device on the tailnet".
-macos/launch-agent/devices.sh allow-all
-```
-
-Changes are applied by restarting the LaunchAgent automatically.
-
 ## Configuration
 
-`install.sh` reads these environment variables. You can export them before running it, or copy `macos/launch-agent/launch-agent.env.example` to `macos/launch-agent/launch-agent.env` and edit that file.
+`install.sh` reads environment variables directly or from the ignored file `macos/launch-agent/launch-agent.env`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `DSH_REMOTE_HARNESS_URL` | `http://127.0.0.1:3080` | Harness HTTP base URL |
-| `DSH_REMOTE_PORT` | `3090` | Remote Host Adapter listen port |
-| `DSH_REMOTE_STATIC_DIR` | `<repo>/apps/mobile-web/dist` | Built PWA files served by the host |
-| `DSH_REMOTE_STATE_FILE` | `~/.dsh-remote/host-state.json` | Persistent Mac host identity |
-| `DSH_REMOTE_ALLOWED_DEVICE_IDS` | empty | Comma-separated Tailscale device IDs; empty means all same-tailnet devices |
-| `DSH_REMOTE_IDENTITY_PROVIDER` | `tailscale` | `tailscale` resolves peers via `tailscale status --json`; `none` disables non-loopback remote access |
-| `DSH_REMOTE_SECRET_STORE` | `mac-keychain` | Store the host device private key in Keychain; `none` disables it for testing |
-| `DSH_REMOTE_CAFFEINATE` | `auto` in the installed LaunchAgent (`off` for a manual CLI start) | `auto` keeps the Mac awake only while sessions are running |
-| `DSH_REMOTE_TRUSTED_HOST` | auto-detected | MagicDNS name passed to the optional Harness supervisor |
-| `DSH_REMOTE_HARNESS_POLL_SECONDS` | `15` | How often the LaunchAgent checks Harness availability |
-| `DSH_INSTALL_HARNESS_SUPERVISOR` | `0` | Set to `1` to install the optional Harness supervisor |
-| `DSH_REMOTE_NODE` | install-time `node` path | Node binary used by the LaunchAgent |
+| `DSH_REMOTE_PORT` | `3090` | Remote Host listen port |
+| `DSH_REMOTE_STATIC_DIR` | `<repo>/apps/mobile-web/dist` | Built mobile app directory |
+| `DSH_REMOTE_STATE_FILE` | `~/.dsh-remote/host-state.json` | Persistent Mac Host identity |
+| `DSH_REMOTE_ALLOWED_DEVICE_IDS` | empty | Comma-separated Tailscale device IDs; empty allows the tailnet |
+| `DSH_REMOTE_IDENTITY_PROVIDER` | `tailscale` | Resolve Tailscale peer identity; `none` accepts loopback only |
+| `DSH_REMOTE_SECRET_STORE` | `mac-keychain` | Store the Remote Host device private key in Keychain |
+| `DSH_REMOTE_CAFFEINATE` | `auto` after install | Keep the Mac awake while sessions are active |
+| `DSH_REMOTE_HARNESS_POLL_SECONDS` | `15` | Harness availability polling interval |
+| `DSH_REMOTE_NODE` | detected during install | Node binary used by the LaunchAgent |
 
-The Remote Host CLI accepts the same values as flags:
-
-```bash
-node packages/remote-host/dist/cli.js --help
-```
-
-## Optional Harness supervisor
-
-If you do not want to manage Harness manually:
+To let the LaunchAgent manage Harness as well:
 
 ```bash
 DSH_INSTALL_HARNESS_SUPERVISOR=1 macos/launch-agent/install.sh
 ```
 
-The supervisor starts `dsh web` only when nothing is already listening on `127.0.0.1:3080`. Manual Harness management remains the default and is less surprising during an upgrade.
+Manual Harness management remains the default so Harness upgrades and credentials stay under your control.
+
+## How it works
+
+```text
+Phone PWA
+  │  HTTPS/WSS over the private tailnet
+  ▼
+Tailscale Serve on the Mac
+  │  TLS termination + PROXY protocol
+  ▼
+Remote Host · 127.0.0.1:3090
+  │  principal resolution, capability checks, idempotency, event envelopes
+  ▼
+DeepSeek Harness Adapter
+  │  allowlisted HTTP/WS translation
+  ▼
+DeepSeek Harness · 127.0.0.1:3080
+```
+
+The mobile UI depends on an `AgentHostTransport`, not on Harness internals. All upstream DeepSeek Harness calls are centralized in one adapter, while the protocol, domain models, authentication policy, client transport, and host process remain separate packages.
+
+### Remote API boundary
+
+The Remote Host exposes only:
+
+- `host.describe`
+- `workspace.list`, `workspace.create`
+- `session.list`, `session.search`, `session.create`, `session.history`, `session.prompt`
+- `agent-preset.list`, `agent-preset.select`
+- `session.models`, `session.select-model`
+- `approval.respond`, `question.respond`
+
+Settings, credentials, local path pickers/openers, and preset mutation methods are not remotely available.
 
 ## Repository layout
 
-| Path | Description |
+| Path | Responsibility |
 | --- | --- |
-| `apps/mobile-web` | Mobile PWA (React + Vite) |
-| `packages/remote-protocol` | Versioned RPC/event envelope and codecs |
-| `packages/remote-domain` | Host/session/approval/review domain models |
-| `packages/remote-client` | `AgentHostTransport` + Tailscale transport |
-| `packages/remote-host` | Loopback Remote Host HTTP/WebSocket server |
-| `packages/auth-core` | `RemotePrincipal`, capabilities, and RPC allowlist |
-| `packages/adapter-deepseek` | The only package that talks to DeepSeek Harness |
-| `macos/launch-agent` | One-command setup, LaunchAgent templates, installer, device manager, Tailscale Serve helper |
-| `tools/` | Connectivity tests and Remote Host self-checks |
-
-## Remote API boundary
-
-The Remote Host only proxies methods declared in `packages/auth-core` (`host.describe`, `workspace.list`, `workspace.create`, `session.list`, `session.search`, `session.create`, `session.history`, `session.prompt`, `session.updateQueue`, `session.cancel`, `approval.respond`, `question.respond`).
-
-`settings.*`, `credentials.*`, directory pickers, file openers, and preset mutations are always `forbidden` remotely.
+| `apps/mobile-web` | React/Vite mobile PWA |
+| `packages/remote-protocol` | Versioned RPC and event envelopes |
+| `packages/remote-domain` | Host, workspace, task, approval, question, and review models |
+| `packages/remote-client` | `AgentHostTransport` and the direct tailnet transport |
+| `packages/remote-host` | Loopback HTTP/WebSocket host and identity boundary |
+| `packages/auth-core` | Principals, roles, capabilities, and remote method policy |
+| `packages/adapter-deepseek` | The only package that speaks the Harness wire protocol |
+| `macos/launch-agent` | Guided setup, LaunchAgent templates, access management, and diagnostics |
+| `tools` | Connectivity and Remote Host checks |
 
 ## Development
 
 ```bash
 corepack pnpm install
-corepack pnpm -r typecheck
-corepack pnpm -r test
-corepack pnpm -r build
+corepack pnpm typecheck
+corepack pnpm test
+corepack pnpm build
+```
 
-# Local mobile dev server (127.0.0.1:5173)
+Run the development servers:
+
+```bash
 corepack pnpm dev:mobile
-
-# Local host against a running Harness
 corepack pnpm dev:host
 ```
 
-Connectivity tests:
+Run the Remote Host self-check after building and starting Harness:
 
 ```bash
-# Remote Host locally, after `pnpm -r build`
 node tools/remote-host-check/check.mjs --base http://127.0.0.1:3090
-
-# Remote Host through Tailscale Serve
-node tools/remote-host-check/check.mjs --base https://<your-mac>.<your-tailnet>.ts.net
 ```
 
-## Known limitations
-
-- Single-user tailnet model. There is no account system, device revocation UI, QR pairing, cloud relay, or push notification yet.
-- Primarily validated on iOS. Android should work through the PWA but has not gone through full device QA.
-- DeepSeek Harness is still an early-stage product and may change its network interface; all DeepSeek Harness calls are isolated in `packages/adapter-deepseek`.
-- This release does not replace the Agent sandbox and approval policy configured in DeepSeek Harness.
+DSH Remote is an independent community project and is not affiliated with or endorsed by DeepSeek.
 
 ## License
 
 [MIT](LICENSE)
-
-DeepSeek Harness and DeepSeek are trademarks or registered trademarks of their respective owners.

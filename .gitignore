@@ -18,6 +18,7 @@ macos/launch-agent/launch-agent.env
 
 # Runtime scratch and logs
 tools/harness-connectivity/.tmp/
+spikes/**/.tmp/
 *.log
 
 # pnpm store (localized under the project)

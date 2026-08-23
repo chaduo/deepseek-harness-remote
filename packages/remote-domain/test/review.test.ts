@@ -71,6 +71,55 @@ describe('review timeline', () => {
     expect(nodes.filter(node => node.kind === 'message')).toHaveLength(1)
   })
 
+  it('maps next-turn message append events back to user messages', () => {
+    const nodes = buildReviewTimeline([
+      event(0, 'message/append', {
+        placement: 'next-turn',
+        message: { content: [{ type: 'text', text: '请先修复移动端审批反馈' }] },
+      }),
+    ])
+
+    expect(nodes).toHaveLength(1)
+    expect(nodes[0]).toMatchObject({
+      kind: 'message',
+      role: 'user',
+      text: '请先修复移动端审批反馈',
+    })
+  })
+
+  it('renders upstream user messages whose content is at the payload root', () => {
+    const nodes = buildReviewTimeline([
+      event(0, 'user/message', {
+        id: 'message_1',
+        role: 'user',
+        content: [{ type: 'text', text: '这是用户自己的指令' }],
+      }),
+    ])
+
+    expect(nodes[0]).toMatchObject({
+      kind: 'message',
+      role: 'user',
+      text: '这是用户自己的指令',
+    })
+  })
+
+  it('keeps injected instructions out of the user conversation', () => {
+    const nodes = buildReviewTimeline([
+      event(0, 'user/message', {
+        role: 'user',
+        source: { kind: 'agent-instructions' },
+        content: [{ type: 'text', text: 'system reminder' }],
+      }),
+    ])
+
+    expect(nodes[0]).toMatchObject({ kind: 'status', label: '系统上下文', detail: 'agent-instructions' })
+  })
+
+  it('uses a user-facing label for unknown internal events', () => {
+    const nodes = buildReviewTimeline([event(0, 'title-llm-request', { phase: 'seed' })])
+    expect(nodes[0]).toMatchObject({ kind: 'raw', label: '未知事件', eventType: 'title-llm-request' })
+  })
+
   it('unwraps the upstream for/call view envelope', () => {
     expect(unwrapToolView({ for: 'call', view: { card: 'terminal', title: 'ls' } }))
       .toEqual({ card: 'terminal', title: 'ls' })

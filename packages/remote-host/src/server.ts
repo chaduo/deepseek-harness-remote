@@ -45,8 +45,6 @@ const IDEMPOTENT_REMOTE_METHODS = new Set([
   'agent-preset.select',
   'session.select-model',
   'session.prompt',
-  'session.updateQueue',
-  'session.cancel',
   'approval.respond',
   'question.respond',
 ])
@@ -184,6 +182,15 @@ export class RemoteHostServer {
     }
 
     if (request.method === 'POST' && url.pathname.startsWith('/api/remote/')) {
+      if (!this.hasSameOrigin(request)) {
+        this.logger.warn({ origin: request.headers.origin, host: request.headers.host }, 'rejecting cross-origin remote RPC')
+        this.sendError(response, 403, 'forbidden', 'cross-origin remote RPC is not allowed')
+        return
+      }
+      if (!this.hasJsonContentType(request)) {
+        this.sendError(response, 415, 'unsupported-media-type', 'remote RPC requires Content-Type: application/json')
+        return
+      }
       const method = url.pathname.slice('/api/remote/'.length)
       const principal = await this.resolvePrincipalOrReject(this.sourceAddressFor(request.socket), response)
       if (principal === null) return
@@ -251,6 +258,11 @@ export class RemoteHostServer {
       this.sendJson(response, 200, envelope)
     }
 
+    if (body.method !== method) {
+      sendResult({ ok: false, error: { code: 'bad-request', message: 'RPC method does not match the request path' } })
+      return
+    }
+
     if (!isRemoteMethod(method)) {
       this.logger.warn({ method }, 'remote method is not allowlisted')
       sendResult({ ok: false, error: { code: 'forbidden', message: `method ${method} is not available remotely` } })
@@ -265,20 +277,33 @@ export class RemoteHostServer {
       return
     }
 
-    if (IDEMPOTENT_REMOTE_METHODS.has(method) && body.idempotencyKey !== undefined) {
-      const previous = this.idempotency.get(body.idempotencyKey)
-      if (previous !== undefined) {
-        this.logger.info({ method, requestId, idempotencyKey: body.idempotencyKey }, 'duplicate write RPC; replaying stored result')
-        sendResult(previous)
-        return
-      }
-    }
-
     try {
-      const value = await this.dispatch(method, body.payload, principal)
-      const result: RemoteRpcResponse['result'] = { ok: true, value }
+      const execute = async (): Promise<RemoteRpcResponse['result']> => {
+        const value = await this.dispatch(method, body.payload, principal)
+        return { ok: true, value }
+      }
+      let result: RemoteRpcResponse['result']
       if (IDEMPOTENT_REMOTE_METHODS.has(method) && body.idempotencyKey !== undefined) {
-        this.idempotency.set(body.idempotencyKey, result)
+        const scopedKey = JSON.stringify([
+          principal.hostId,
+          principal.userId,
+          principal.deviceId,
+          method,
+          body.idempotencyKey,
+        ])
+        const execution = await this.idempotency.run(scopedKey, execute)
+        result = execution.result
+        if (execution.replayed) {
+          this.logger.info({
+            method,
+            requestId,
+            idempotencyKey: body.idempotencyKey,
+            userId: principal.userId,
+            deviceId: principal.deviceId,
+          }, 'duplicate write RPC; replaying stored result')
+        }
+      } else {
+        result = await execute()
       }
       this.logger.info({
         method,
@@ -353,6 +378,12 @@ export class RemoteHostServer {
     void head
     const physicalAddress = (socket as Duplex & { remoteAddress?: string }).remoteAddress
     if (!this.isTrustedProxySource(physicalAddress)) {
+      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+      return
+    }
+
+    if (!this.hasSameOrigin(request)) {
+      this.logger.warn({ origin: request.headers.origin, host: request.headers.host }, 'rejecting cross-origin websocket')
       socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
       return
     }
@@ -562,6 +593,32 @@ export class RemoteHostServer {
 
   private isTrustedProxySource(remoteAddress?: string): boolean {
     return remoteAddress === undefined || remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1'
+  }
+
+  /**
+   * Browsers set Origin on cross-origin POSTs and WebSocket handshakes. Match
+   * its authority to Host while still allowing non-browser diagnostics, which
+   * do not send Origin and are already constrained by the device boundary.
+   */
+  private hasSameOrigin(request: IncomingMessage): boolean {
+    const originHeader = request.headers.origin
+    if (originHeader === undefined) return true
+    const hostHeader = request.headers.host
+    if (hostHeader === undefined) return false
+    try {
+      const origin = new URL(originHeader)
+      if (origin.protocol !== 'http:' && origin.protocol !== 'https:') return false
+      const expected = new URL(`${origin.protocol}//${hostHeader}`)
+      return origin.origin === expected.origin
+    } catch {
+      return false
+    }
+  }
+
+  private hasJsonContentType(request: IncomingMessage): boolean {
+    const contentType = request.headers['content-type']
+    if (typeof contentType !== 'string') return false
+    return contentType.split(';', 1)[0]?.trim().toLowerCase() === 'application/json'
   }
 
   private async readJsonBody(request: IncomingMessage): Promise<RemoteRpcRequest> {

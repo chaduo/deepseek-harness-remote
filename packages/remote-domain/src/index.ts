@@ -53,6 +53,7 @@ export interface SessionSummary {
 export interface SessionGroup {
   workspaceId: string | null
   title: string
+  path?: string
   sessions: SessionSummary[]
 }
 
@@ -237,8 +238,15 @@ export function groupSessionsByWorkspace(
   sessions: SessionSummary[],
   workspaces: WorkspaceSummary[],
 ): SessionGroup[] {
-  const titles = new Map(workspaces.map(workspace => [workspace.workspaceId, workspace.title]))
-  const groups = new Map<string, SessionGroup>()
+  const groups = new Map<string, SessionGroup>(workspaces.map(workspace => [
+    workspace.workspaceId,
+    {
+      workspaceId: workspace.workspaceId,
+      title: workspace.title,
+      path: workspace.path,
+      sessions: [],
+    },
+  ]))
   for (const session of sessions) {
     const key = session.workspaceId ?? 'ungrouped'
     const workspaceId = session.workspaceId ?? null
@@ -246,7 +254,7 @@ export function groupSessionsByWorkspace(
     if (group === undefined) {
       group = {
         workspaceId,
-        title: workspaceId === null ? '未分组' : (titles.get(workspaceId) ?? workspaceId),
+        title: workspaceId === null ? '未分组' : workspaceId,
         sessions: [],
       }
       groups.set(key, group)

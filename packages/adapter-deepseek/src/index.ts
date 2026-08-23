@@ -440,22 +440,31 @@ export class DeepSeekHarnessAdapter {
   }
 
   private async respond(rpcId: string, value: unknown): Promise<{ accepted: boolean }> {
-    const response = await this.fetchImpl(`${this.baseUrl}/api/respond`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        type: 'client-response',
-        rpcId,
-        result: { ok: true, value },
-      } satisfies HarnessClientResponse),
-    })
+    const controller = new AbortController()
+    const timer = setTimeout(() => {
+      controller.abort(new HarnessAdapterError('upstream /api/respond timed out', 'protocol'))
+    }, this.timeoutMs)
+    try {
+      const response = await this.fetchImpl(`${this.baseUrl}/api/respond`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          type: 'client-response',
+          rpcId,
+          result: { ok: true, value },
+        } satisfies HarnessClientResponse),
+        signal: controller.signal,
+      })
 
-    if (!response.ok) {
-      throw new HarnessAdapterError(`upstream HTTP ${response.status} for /api/respond`, 'http', response.status)
+      if (!response.ok) {
+        throw new HarnessAdapterError(`upstream HTTP ${response.status} for /api/respond`, 'http', response.status)
+      }
+
+      const body = (await response.json()) as { accepted: boolean } | { accepted: false; reason: string }
+      return { accepted: body.accepted === true }
+    } finally {
+      clearTimeout(timer)
     }
-
-    const body = (await response.json()) as { accepted: boolean } | { accepted: false; reason: string }
-    return { accepted: body.accepted === true }
   }
 
   private async *websocketEvents(path: string, signal?: AbortSignal): AsyncGenerator<HarnessServerRequest> {

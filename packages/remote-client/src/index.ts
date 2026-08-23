@@ -61,7 +61,12 @@ export interface AgentHostTransport {
   prompt(input: PromptInput, idempotencyKey?: string): Promise<void>
   approvalRespond(decision: ApprovalDecision): Promise<{ accepted: boolean }>
   questionRespond(decision: QuestionDecision): Promise<{ accepted: boolean }>
-  events(kind?: 'mux' | 'host', signal?: AbortSignal): AsyncGenerator<RemoteEventEnvelope>
+  /**
+   * `onOpen` fires once the stream handshake completes, before any frame is
+   * yielded. Callers need it because an idle host sends nothing: without it,
+   * "the stream is up" is indistinguishable from "still dialling".
+   */
+  events(kind?: 'mux' | 'host', signal?: AbortSignal, onOpen?: () => void): AsyncGenerator<RemoteEventEnvelope>
   close(): void
 }
 
@@ -70,6 +75,14 @@ export interface DirectTailnetTransportOptions {
   fetch?: typeof fetch
   WebSocket?: WebSocketConstructor
   timeoutMs?: number
+  /**
+   * Deadline for opening the event WebSocket, separate from `timeoutMs`
+   * because it answers a different question. An RPC deadline must tolerate a
+   * slow reply from a busy Harness, while the stream handshake only asks
+   * whether the host is reachable at all — and a client that reconnects on a
+   * budget pays this timeout once per attempt. Defaults to `timeoutMs`.
+   */
+  eventOpenTimeoutMs?: number
 }
 
 export class RemoteTransportError extends Error {
@@ -92,6 +105,7 @@ export class DirectTailnetTransport implements AgentHostTransport {
   private readonly fetchImpl: typeof fetch
   private readonly WebSocketImpl: WebSocketConstructor
   private readonly timeoutMs: number
+  private readonly eventOpenTimeoutMs: number
   private readonly sockets = new Set<WebSocketLike>()
 
   constructor(options: DirectTailnetTransportOptions) {
@@ -99,6 +113,7 @@ export class DirectTailnetTransport implements AgentHostTransport {
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis)
     this.WebSocketImpl = options.WebSocket ?? (globalThis.WebSocket as unknown as WebSocketConstructor)
     this.timeoutMs = options.timeoutMs ?? 30_000
+    this.eventOpenTimeoutMs = options.eventOpenTimeoutMs ?? this.timeoutMs
   }
 
   async health(): Promise<RemoteHostHealth> {
@@ -161,7 +176,7 @@ export class DirectTailnetTransport implements AgentHostTransport {
     return this.rpc(
       'approval.respond',
       decision,
-      `approval:${decision.sessionId}:${decision.approvalId}:${decision.rpcId}`,
+      `approval:${decision.sessionId}:${decision.approvalId}:${decision.rpcId}:${decision.outcome}`,
     )
   }
 
@@ -173,7 +188,7 @@ export class DirectTailnetTransport implements AgentHostTransport {
     )
   }
 
-  async *events(kind: 'mux' | 'host' = 'mux', signal?: AbortSignal): AsyncGenerator<RemoteEventEnvelope> {
+  async *events(kind: 'mux' | 'host' = 'mux', signal?: AbortSignal, onOpen?: () => void): AsyncGenerator<RemoteEventEnvelope> {
     const path = kind === 'mux' ? '/api/remote/events.mux' : '/api/remote/events.host'
     const url = new URL(path, this.baseUrl)
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -213,7 +228,7 @@ export class DirectTailnetTransport implements AgentHostTransport {
 
     try {
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new RemoteTransportError(`WebSocket ${path} open timed out`, 'protocol')), this.timeoutMs)
+        const timer = setTimeout(() => reject(new RemoteTransportError(`WebSocket ${path} open timed out`, 'protocol')), this.eventOpenTimeoutMs)
         socket.addEventListener('open', () => {
           clearTimeout(timer)
           resolve()
@@ -223,6 +238,8 @@ export class DirectTailnetTransport implements AgentHostTransport {
           reject(new RemoteTransportError(`WebSocket ${path} failed to open`, 'protocol'))
         })
       })
+
+      onOpen?.()
 
       while (true) {
         if (messages.length > 0) {

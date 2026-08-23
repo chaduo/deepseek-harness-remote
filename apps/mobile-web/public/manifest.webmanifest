@@ -3,8 +3,8 @@
   "short_name": "DSH Remote",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0c0d12",
-  "theme_color": "#0c0d12",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
   "icons": [
     {
       "src": "/icon.svg",
