@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   quality:
-    name: Typecheck, test, build
+    name: Typecheck, build, test
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -36,8 +36,8 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Test
-        run: pnpm test
-
       - name: Build
         run: pnpm build
+
+      - name: Test
+        run: pnpm test
