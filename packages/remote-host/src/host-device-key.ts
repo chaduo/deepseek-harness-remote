@@ -23,6 +23,7 @@ export async function ensureHostDeviceKey(store: SecretStore, hostId: HostId): P
     if (publicKey !== undefined) {
       return { publicKeyPem: publicKey, fingerprint: fingerprint(publicKey), created: false }
     }
+    throw new Error('stored host device key is invalid; refusing to replace it')
   }
 
   const { privateKey, publicKey } = generateKeyPairSync('ed25519')

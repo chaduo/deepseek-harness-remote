@@ -18,6 +18,7 @@ function decodeKeychainPassword(raw: string): string {
 
 export interface SecretStore {
   setSecret(account: string, secret: string): Promise<void>
+  /** Return undefined only when absent; throw when an existing secret cannot be read. */
   getSecret(account: string): Promise<string | undefined>
   deleteSecret(account: string): Promise<void>
 }
@@ -73,11 +74,15 @@ export class MacKeychainSecretStore implements SecretStore {
         '-s', this.service,
         '-w',
       ], { timeout: 10_000, maxBuffer: 1024 * 1024 })
-      const secret = decodeKeychainPassword(stdout.replace(/\r?\n$/, ''))
-      return secret === '' ? undefined : secret
+      return decodeKeychainPassword(stdout.replace(/\r?\n$/, ''))
     } catch (error) {
-      this.logger?.warn({ account }, 'keychain read failed or item not found')
-      return undefined
+      // `security` exposes errSecItemNotFound (-25300) as exit status 44.
+      if (error !== null && typeof error === 'object' && 'code' in error && error.code === 44) {
+        return undefined
+      }
+      this.logger?.warn({ account }, 'keychain read failed')
+      // Keep command output and error details out of logs and caller errors.
+      throw new Error('macOS Keychain read failed')
     }
   }
 

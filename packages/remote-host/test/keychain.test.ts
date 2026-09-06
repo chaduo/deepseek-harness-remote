@@ -33,10 +33,35 @@ describe('MacKeychainSecretStore', () => {
   it('returns undefined when the item is absent', async () => {
     const store = new MacKeychainSecretStore({
       execFile: (async () => {
-        throw new Error('not found')
+        throw Object.assign(new Error('item not found'), { code: 44 })
       }) as never,
     })
     await expect(store.getSecret('missing')).resolves.toBeUndefined()
+  })
+
+  it.each([
+    { code: 36 },
+    { code: 'ENOENT' },
+    { code: null, killed: true, signal: 'SIGTERM' },
+    {},
+  ])('rejects read failures without exposing command output: %j', async details => {
+    const warn = vi.fn()
+    const store = new MacKeychainSecretStore({
+      logger: { warn },
+      execFile: (async () => {
+        throw Object.assign(new Error('sensitive-command-output'), details)
+      }) as never,
+    })
+    await expect(store.getSecret('account_1')).rejects.toThrow('macOS Keychain read failed')
+    expect(warn).toHaveBeenCalledWith({ account: 'account_1' }, 'keychain read failed')
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('sensitive-command-output')
+  })
+
+  it('preserves an empty stored value so it is not treated as an absent item', async () => {
+    const store = new MacKeychainSecretStore({
+      execFile: (async () => ({ stdout: '\n' })) as never,
+    })
+    await expect(store.getSecret('empty')).resolves.toBe('')
   })
 
   it('decodes the base64 wrapper from keychain output', async () => {
