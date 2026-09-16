@@ -7,6 +7,7 @@ import { extname, join, normalize } from 'node:path'
 import type { Duplex } from 'node:stream'
 import type { DeepSeekHarnessAdapter, HarnessServerRequest } from '@dsh-remote/adapter-deepseek'
 import {
+  authorize,
   isRemoteMethod,
   REMOTE_METHOD_CAPABILITIES,
   authorizeRemoteMethod,
@@ -17,6 +18,9 @@ import type {
   CheckRunInput,
   HostDescriptor,
   PromptInput,
+  PreviewOpenInput,
+  PushSubscriptionInput,
+  PushUnsubscribeInput,
   QuestionDecision,
   SessionCreateInput,
   SessionHistoryQuery,
@@ -35,6 +39,8 @@ import {
 import { EventSequencer } from './event-sequencer.js'
 import { CheckRunner, type CheckRunnerEvent } from './check-runner.js'
 import { IdempotencyStore } from './idempotency-store.js'
+import { PreviewProxy, PreviewProxyError } from './preview-proxy.js'
+import { PushNotifier, pushNoticeFor } from './push-notifier.js'
 import { isLoopbackIp, parseProxyProtocolLine } from './proxy-protocol.js'
 import type { TailscaleIdentityProvider } from './tailscale-identity.js'
 import type { CaffeinateSupervisor } from './caffeinate.js'
@@ -68,6 +74,8 @@ export interface RemoteHostServerOptions {
   identityProvider?: TailscaleIdentityProvider
   allowedDeviceIds?: Iterable<string>
   checkRunner?: CheckRunner
+  previewProxy?: PreviewProxy
+  pushNotifier?: PushNotifier
 }
 
 interface ResolvedPrincipal {
@@ -99,6 +107,10 @@ export class RemoteHostServer {
   ])
   private readonly checkRunner: CheckRunner | undefined
   private readonly stopCheckEvents: (() => void) | undefined
+  private readonly previewProxy: PreviewProxy | undefined
+  private readonly pushNotifier: PushNotifier | undefined
+  private readonly stopPushEvents: (() => void) | undefined
+  private readonly pushEvents: Promise<void> | undefined
   private generatedCheckEventSerial = 0
 
   constructor(options: RemoteHostServerOptions) {
@@ -110,7 +122,26 @@ export class RemoteHostServer {
     this.identityProvider = options.identityProvider
     this.allowedDeviceIds = options.allowedDeviceIds === undefined ? undefined : new Set(options.allowedDeviceIds)
     this.checkRunner = options.checkRunner
-    this.stopCheckEvents = this.checkRunner?.onEvent(event => this.broadcastCheckEvent(event))
+    this.stopCheckEvents = this.checkRunner?.onEvent(event => {
+      this.broadcastCheckEvent(event)
+      if (event.type === 'check.finished') {
+        const status = event.run.status === 'passed' ? '通过' : event.run.status === 'failed' ? '失败' : '已结束'
+        void this.notifyPush({
+          type: 'check',
+          title: `项目检查${status}`,
+          body: event.run.log.split('\n').filter(line => line.trim() !== '').at(-1) ?? event.run.checkId,
+          url: event.run.sessionId === undefined ? '/' : `/?session=${encodeURIComponent(event.run.sessionId)}`,
+          tag: `check:${event.run.runId}`,
+        })
+      }
+    })
+    this.previewProxy = options.previewProxy
+    this.pushNotifier = options.pushNotifier
+    if (this.pushNotifier !== undefined) {
+      const controller = new AbortController()
+      this.stopPushEvents = () => controller.abort()
+      this.pushEvents = this.consumePushEvents(controller.signal)
+    }
     this.options = {
       host: options.host ?? '127.0.0.1',
       port: options.port ?? 3090,
@@ -150,6 +181,8 @@ export class RemoteHostServer {
   async close(): Promise<void> {
     this.caffeinate?.stop()
     this.stopCheckEvents?.()
+    this.stopPushEvents?.()
+    await this.pushEvents
     await this.checkRunner?.close()
     for (const socket of this.sockets) socket.destroy()
     for (const sockets of this.eventSockets.values()) sockets.clear()
@@ -212,6 +245,24 @@ export class RemoteHostServer {
       const principal = await this.resolvePrincipalOrReject(this.sourceAddressFor(request.socket), response)
       if (principal === null) return
       await this.handleRpc(method, request, response, principal)
+      return
+    }
+
+    if (this.previewProxy !== undefined && url.pathname.startsWith('/api/preview/')) {
+      if (!this.hasSameOrigin(request)) {
+        this.logger.warn({ origin: request.headers.origin, host: request.headers.host }, 'rejecting cross-origin preview request')
+        this.sendError(response, 403, 'forbidden', 'cross-origin preview requests are not allowed')
+        return
+      }
+      const principal = await this.resolvePrincipalOrReject(this.sourceAddressFor(request.socket), response)
+      if (principal === null) return
+      try {
+        authorize(principal, 'preview:read')
+      } catch (error) {
+        this.sendError(response, 403, 'forbidden', String(error))
+        return
+      }
+      await this.handlePreview(url, request, response, principal)
       return
     }
 
@@ -410,8 +461,88 @@ export class RemoteHostServer {
         if (this.checkRunner === undefined) throw new Error('project checks are not configured')
         return this.checkRunner.cancel((payload as { runId: string }).runId)
       }
+      case 'preview.list':
+        return { items: this.previewProxy?.listDefinitions() ?? [] }
+      case 'preview.open': {
+        if (this.previewProxy === undefined) throw new Error('web previews are not configured')
+        return this.previewProxy.open((payload as PreviewOpenInput).previewId, principal)
+      }
+      case 'push.vapid':
+        return this.pushNotifier === undefined
+          ? { configured: false }
+          : { configured: true, publicKey: this.pushNotifier.publicKey() }
+      case 'push.list':
+        return { items: this.pushNotifier?.list(principal) ?? [] }
+      case 'push.subscribe': {
+        if (this.pushNotifier === undefined) throw new Error('push notifications are not configured')
+        return await this.pushNotifier.subscribe(principal, payload as PushSubscriptionInput)
+      }
+      case 'push.unsubscribe': {
+        if (this.pushNotifier === undefined) throw new Error('push notifications are not configured')
+        return await this.pushNotifier.unsubscribe(principal, payload as PushUnsubscribeInput)
+      }
       default:
         throw new Error(`method ${method} is allowlisted but not implemented yet`)
+    }
+  }
+
+  private async handlePreview(
+    url: URL,
+    request: IncomingMessage,
+    response: ServerResponse,
+    principal: RemotePrincipal,
+  ): Promise<void> {
+    const remainder = url.pathname.slice('/api/preview/'.length)
+    const slash = remainder.indexOf('/')
+    const rawPreviewId = slash === -1 ? remainder : remainder.slice(0, slash)
+    if (rawPreviewId === '') {
+      this.sendError(response, 404, 'not-found', 'preview id is missing')
+      return
+    }
+    let previewId: string
+    try {
+      previewId = decodeURIComponent(rawPreviewId)
+    } catch {
+      this.sendError(response, 400, 'bad-request', 'preview id is not valid URL encoding')
+      return
+    }
+
+    let body: Uint8Array | undefined
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      try {
+        body = await this.readRequestBytes(request)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        this.sendError(response, message === 'request body too large' ? 413 : 400, 'bad-request', message)
+        return
+      }
+    }
+
+    const headers = new Headers()
+    for (const [name, value] of Object.entries(request.headers)) {
+      if (value === undefined) continue
+      headers.set(name, Array.isArray(value) ? value.join(', ') : value)
+    }
+
+    try {
+      const result = await this.previewProxy!.request({
+        previewId,
+        pathname: slash === -1 ? '/' : remainder.slice(slash) || '/',
+        search: url.search,
+        token: url.searchParams.get('token') ?? '',
+        principal,
+        method: request.method ?? 'GET',
+        headers,
+        ...(body !== undefined && { body }),
+      })
+      const responseHeaders: Record<string, string> = {}
+      for (const [name, value] of result.headers) responseHeaders[name] = value
+      response.writeHead(result.status, responseHeaders)
+      response.end(request.method === 'HEAD' ? undefined : Buffer.from(result.body))
+    } catch (error) {
+      const status = error instanceof PreviewProxyError ? error.statusCode : 502
+      const message = error instanceof Error ? error.message : String(error)
+      this.sendError(response, status, status === 403 ? 'forbidden' : 'preview-failed', message)
     }
   }
 
@@ -526,6 +657,45 @@ export class RemoteHostServer {
   private broadcastEvent(kind: 'mux' | 'host', envelope: RemoteEventEnvelope): void {
     for (const socket of this.eventSockets.get(kind) ?? []) {
       this.writeWebSocketText(socket, envelope)
+    }
+  }
+
+  private async consumePushEvents(signal: AbortSignal): Promise<void> {
+    let retryDelay = 1_000
+    while (!signal.aborted) {
+      try {
+        for await (const message of this.adapter.muxEvents(signal)) {
+          const notice = pushNoticeFor(message)
+          if (notice !== undefined) await this.notifyPush(notice)
+        }
+        retryDelay = 1_000
+      } catch (error) {
+        if (signal.aborted) return
+        this.logger.warn({ error: String(error) }, 'push event stream ended; retrying')
+      }
+      if (signal.aborted) return
+      await new Promise<void>(resolve => {
+        const timer = setTimeout(() => {
+          signal.removeEventListener('abort', onAbort)
+          resolve()
+        }, retryDelay)
+        const onAbort = () => {
+          clearTimeout(timer)
+          signal.removeEventListener('abort', onAbort)
+          resolve()
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+      })
+      retryDelay = Math.min(retryDelay * 2, 30_000)
+    }
+  }
+
+  private async notifyPush(payload: Parameters<PushNotifier['notify']>[0]): Promise<void> {
+    if (this.pushNotifier === undefined) return
+    try {
+      await this.pushNotifier.notify(payload)
+    } catch (error) {
+      this.logger.warn({ error: String(error), type: payload.type }, 'push notification failed')
     }
   }
 
@@ -688,6 +858,14 @@ export class RemoteHostServer {
   }
 
   private async readJsonBody(request: IncomingMessage): Promise<RemoteRpcRequest> {
+    const buffer = await this.readRequestBytes(request)
+    const text = Buffer.from(buffer).toString('utf8')
+    const value = JSON.parse(text) as unknown
+    if (!isRemoteRpcRequest(value)) throw new Error('request is not a remote RPC request')
+    return value
+  }
+
+  private async readRequestBytes(request: IncomingMessage): Promise<Uint8Array> {
     const chunks: Buffer[] = []
     let size = 0
     for await (const chunk of request) {
@@ -695,10 +873,7 @@ export class RemoteHostServer {
       if (size > this.options.maxRequestBodyBytes) throw new Error('request body too large')
       chunks.push(chunk)
     }
-    const text = Buffer.concat(chunks).toString('utf8')
-    const value = JSON.parse(text) as unknown
-    if (!isRemoteRpcRequest(value)) throw new Error('request is not a remote RPC request')
-    return value
+    return Buffer.concat(chunks)
   }
 
   private async serveStatic(pathname: string, response: ServerResponse): Promise<void> {

@@ -52,3 +52,48 @@ self.addEventListener('fetch', event => {
     )
   }
 })
+
+self.addEventListener('push', event => {
+  let payload = {}
+  try {
+    payload = event.data?.json() ?? {}
+  } catch {
+    payload = { title: 'DSH Remote', body: 'Mac 上有新的任务状态' }
+  }
+
+  const title = typeof payload.title === 'string' ? payload.title : 'DSH Remote'
+  const body = typeof payload.body === 'string' ? payload.body : '打开任务查看最新状态'
+  const tag = typeof payload.tag === 'string' ? payload.tag : 'dsh-remote'
+  const rawUrl = typeof payload.url === 'string' ? payload.url : '/'
+  let url = '/'
+  try {
+    const candidate = new URL(rawUrl, self.location.origin)
+    if (candidate.origin === self.location.origin) url = `${candidate.pathname}${candidate.search}${candidate.hash}`
+  } catch {
+    // Keep the notification on the app home page for malformed payloads.
+  }
+
+  event.waitUntil(self.registration.showNotification(title, {
+    body,
+    tag,
+    data: { url },
+    icon: '/icon.svg',
+    badge: '/icon.svg',
+    renotify: false,
+  }))
+})
+
+self.addEventListener('notificationclick', event => {
+  event.notification.close()
+  const rawUrl = event.notification.data?.url
+  const target = typeof rawUrl === 'string' ? new URL(rawUrl, self.location.origin).toString() : self.location.origin
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+    for (const client of windows) {
+      if ('navigate' in client) await client.navigate(target)
+      await client.focus()
+      return
+    }
+    await self.clients.openWindow(target)
+  })())
+})

@@ -238,6 +238,49 @@ export interface CheckRunInput {
   sessionId?: SessionId
 }
 
+export interface PreviewDefinitionSummary {
+  previewId: string
+  label: string
+}
+
+export interface PreviewOpenInput {
+  previewId: string
+}
+
+export interface PreviewOpenResult {
+  previewId: string
+  label: string
+  /** Same-origin URL carrying a short-lived preview token. */
+  url: string
+  expiresAt: number
+}
+
+export interface PushVapidResult {
+  configured: boolean
+  publicKey?: string
+}
+
+export interface PushSubscriptionInput {
+  endpoint: string
+  keys: {
+    p256dh: string
+    auth: string
+  }
+  deviceName?: string
+}
+
+export interface PushSubscriptionSummary {
+  subscriptionId: string
+  deviceName?: string
+  createdAt: string
+  lastSeenAt: string
+}
+
+export interface PushUnsubscribeInput {
+  subscriptionId?: string
+  endpoint?: string
+}
+
 export interface RemoteApiMap {
   'host.describe': { payload: {}; result: HostDescriptor }
   'workspace.list': { payload: {}; result: WorkspaceListResult }
@@ -257,6 +300,12 @@ export interface RemoteApiMap {
   'check.run': { payload: CheckRunInput; result: CheckRun }
   'check.get': { payload: { runId: string }; result: CheckRun }
   'check.cancel': { payload: { runId: string }; result: { accepted: boolean } }
+  'preview.list': { payload: {}; result: { items: PreviewDefinitionSummary[] } }
+  'preview.open': { payload: PreviewOpenInput; result: PreviewOpenResult }
+  'push.vapid': { payload: {}; result: PushVapidResult }
+  'push.list': { payload: {}; result: { items: PushSubscriptionSummary[] } }
+  'push.subscribe': { payload: PushSubscriptionInput; result: { subscriptionId: string } }
+  'push.unsubscribe': { payload: PushUnsubscribeInput; result: { accepted: boolean } }
 }
 
 export type RemoteMethod = keyof RemoteApiMap

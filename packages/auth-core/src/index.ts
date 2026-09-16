@@ -17,6 +17,8 @@ export type RemoteCapability =
   | 'question:respond'
   | 'check:read'
   | 'check:run'
+  | 'preview:read'
+  | 'push:manage'
   | 'host:admin'
 
 export const ROLE_CAPABILITIES: Record<RemoteRole, readonly RemoteCapability[]> = {
@@ -31,6 +33,8 @@ export const ROLE_CAPABILITIES: Record<RemoteRole, readonly RemoteCapability[]> 
     'question:respond',
     'check:read',
     'check:run',
+    'preview:read',
+    'push:manage',
     'host:admin',
   ],
   operator: [
@@ -44,6 +48,8 @@ export const ROLE_CAPABILITIES: Record<RemoteRole, readonly RemoteCapability[]> 
     'question:respond',
     'check:read',
     'check:run',
+    'preview:read',
+    'push:manage',
   ],
   viewer: [
     'host:read',
@@ -75,6 +81,12 @@ export const REMOTE_METHOD_CAPABILITIES = {
   'check.get': 'check:read',
   'check.run': 'check:run',
   'check.cancel': 'check:run',
+  'preview.list': 'preview:read',
+  'preview.open': 'preview:read',
+  'push.vapid': 'push:manage',
+  'push.list': 'push:manage',
+  'push.subscribe': 'push:manage',
+  'push.unsubscribe': 'push:manage',
 } as const satisfies Record<string, RemoteCapability>
 
 export type RemoteMethod = keyof typeof REMOTE_METHOD_CAPABILITIES

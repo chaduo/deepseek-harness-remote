@@ -6,6 +6,13 @@ import type {
   CheckRun,
   CheckRunInput,
   HostDescriptor,
+  PreviewDefinitionSummary,
+  PreviewOpenInput,
+  PreviewOpenResult,
+  PushSubscriptionInput,
+  PushSubscriptionSummary,
+  PushUnsubscribeInput,
+  PushVapidResult,
   PromptInput,
   QuestionDecision,
   RemoteApiMap,
@@ -68,6 +75,12 @@ export interface AgentHostTransport {
   runCheck(input: CheckRunInput, idempotencyKey?: string): Promise<CheckRun>
   getCheck(runId: string): Promise<CheckRun>
   cancelCheck(runId: string, idempotencyKey?: string): Promise<{ accepted: boolean }>
+  listPreviews(): Promise<{ items: PreviewDefinitionSummary[] }>
+  openPreview(input: PreviewOpenInput): Promise<PreviewOpenResult>
+  pushVapid(): Promise<PushVapidResult>
+  listPushSubscriptions(): Promise<{ items: PushSubscriptionSummary[] }>
+  subscribePush(input: PushSubscriptionInput): Promise<{ subscriptionId: string }>
+  unsubscribePush(input: PushUnsubscribeInput): Promise<{ accepted: boolean }>
   /**
    * `onOpen` fires once the stream handshake completes, before any frame is
    * yielded. Callers need it because an idle host sends nothing: without it,
@@ -209,6 +222,30 @@ export class DirectTailnetTransport implements AgentHostTransport {
 
   cancelCheck(runId: string, idempotencyKey?: string): Promise<{ accepted: boolean }> {
     return this.rpc('check.cancel', { runId }, idempotencyKey)
+  }
+
+  listPreviews(): Promise<{ items: PreviewDefinitionSummary[] }> {
+    return this.rpc('preview.list', {})
+  }
+
+  openPreview(input: PreviewOpenInput): Promise<PreviewOpenResult> {
+    return this.rpc('preview.open', input)
+  }
+
+  pushVapid(): Promise<PushVapidResult> {
+    return this.rpc('push.vapid', {})
+  }
+
+  listPushSubscriptions(): Promise<{ items: PushSubscriptionSummary[] }> {
+    return this.rpc('push.list', {})
+  }
+
+  subscribePush(input: PushSubscriptionInput): Promise<{ subscriptionId: string }> {
+    return this.rpc('push.subscribe', input)
+  }
+
+  unsubscribePush(input: PushUnsubscribeInput): Promise<{ accepted: boolean }> {
+    return this.rpc('push.unsubscribe', input)
   }
 
   async *events(kind: 'mux' | 'host' = 'mux', signal?: AbortSignal, onOpen?: () => void): AsyncGenerator<RemoteEventEnvelope> {

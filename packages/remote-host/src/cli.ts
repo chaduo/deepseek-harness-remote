@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { parseArgs } from 'node:util'
 import { DeepSeekHarnessAdapter } from '@dsh-remote/adapter-deepseek'
 import { CaffeinateSupervisor } from './caffeinate.js'
@@ -7,6 +8,12 @@ import { JsonLogger } from './logger.js'
 import { defaultHostStateFile, loadOrCreateHostIdentity, persistHostDeviceKey } from './host-identity.js'
 import { MacKeychainSecretStore } from './keychain.js'
 import { RemoteHostServer } from './server.js'
+import { PreviewProxy, loadPreviewDefinitions } from './preview-proxy.js'
+import {
+  JsonPushSubscriptionStore,
+  loadOrCreateVapidDetails,
+  PushNotifier,
+} from './push-notifier.js'
 import { TailscaleCliIdentityProvider } from './tailscale-identity.js'
 
 function parsePort(value: string): number {
@@ -15,6 +22,11 @@ function parsePort(value: string): number {
     throw new Error(`invalid port: ${value}`)
   }
   return port
+}
+
+function nonEmpty(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  return trimmed === undefined || trimmed === '' ? undefined : trimmed
 }
 
 const { values } = parseArgs({
@@ -31,6 +43,9 @@ const { values } = parseArgs({
     'allowed-device-ids': { type: 'string' },
     'secret-store': { type: 'string' },
     'checks-file': { type: 'string' },
+    'previews-file': { type: 'string' },
+    'vapid-keys-file': { type: 'string' },
+    'push-subscriptions-file': { type: 'string' },
   },
   allowPositionals: false,
 })
@@ -72,10 +87,37 @@ if (!['mac-keychain', 'none'].includes(secretStoreMode)) {
 const secretStore = secretStoreMode === 'mac-keychain'
   ? new MacKeychainSecretStore({ logger })
   : undefined
-const checksFile = values['checks-file'] ?? process.env.DSH_REMOTE_CHECKS_FILE
+const checksFile = nonEmpty(values['checks-file']) ?? nonEmpty(process.env.DSH_REMOTE_CHECKS_FILE)
 const checkRunner = checksFile === undefined
   ? undefined
   : new CheckRunner({ definitions: await loadCheckDefinitions(checksFile) })
+const previewsFile = nonEmpty(values['previews-file']) ?? nonEmpty(process.env.DSH_REMOTE_PREVIEWS_FILE)
+const previewProxy = previewsFile === undefined
+  ? undefined
+  : new PreviewProxy({
+      definitions: await loadPreviewDefinitions(previewsFile),
+      secret: nonEmpty(process.env.DSH_REMOTE_PREVIEW_SECRET) ?? randomBytes(32),
+    })
+const vapidSubject = nonEmpty(process.env.DSH_REMOTE_VAPID_SUBJECT) ?? 'mailto:dsh-remote@example.invalid'
+const vapidPublicKey = nonEmpty(process.env.DSH_REMOTE_VAPID_PUBLIC_KEY)
+const vapidPrivateKey = nonEmpty(process.env.DSH_REMOTE_VAPID_PRIVATE_KEY)
+if ((vapidPublicKey === undefined) !== (vapidPrivateKey === undefined)) {
+  throw new Error('DSH_REMOTE_VAPID_PUBLIC_KEY and DSH_REMOTE_VAPID_PRIVATE_KEY must be configured together')
+}
+const vapidDetails = vapidPublicKey !== undefined && vapidPrivateKey !== undefined
+  ? { subject: vapidSubject, publicKey: vapidPublicKey, privateKey: vapidPrivateKey }
+  : await loadOrCreateVapidDetails(
+      nonEmpty(values['vapid-keys-file']) ?? nonEmpty(process.env.DSH_REMOTE_VAPID_KEYS_FILE) ?? `${stateFile}.vapid.json`,
+      vapidSubject,
+    )
+const pushSubscriptionsStore = new JsonPushSubscriptionStore(
+  nonEmpty(values['push-subscriptions-file']) ?? nonEmpty(process.env.DSH_REMOTE_PUSH_SUBSCRIPTIONS_FILE) ?? `${stateFile}.push.json`,
+)
+const pushNotifier = new PushNotifier({
+  vapid: vapidDetails,
+  initialSubscriptions: await pushSubscriptionsStore.load(),
+  persist: subscriptions => pushSubscriptionsStore.save(subscriptions),
+})
 const deviceKey = secretStore !== undefined
   ? await (async () => {
       try {
@@ -104,6 +146,8 @@ const server = new RemoteHostServer({
   ...(identityProvider !== undefined && { identityProvider }),
   ...(allowedDeviceIds !== undefined && allowedDeviceIds.length > 0 && { allowedDeviceIds }),
   ...(checkRunner !== undefined && { checkRunner }),
+  ...(previewProxy !== undefined && { previewProxy }),
+  pushNotifier,
 })
 
 let shuttingDown = false
@@ -128,6 +172,7 @@ try {
       deviceKeyCreated: deviceKey.created,
       deviceKeyPersisted: true,
     }),
+    pushPublicKey: pushNotifier.publicKey(),
   }, 'dsh-remote-host ready')
 } catch (error) {
   logger.error({ error: String(error) }, 'failed to start remote host')

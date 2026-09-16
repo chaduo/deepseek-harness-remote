@@ -5,6 +5,8 @@ import type {
   ModelSelection,
   CheckDefinitionSummary,
   CheckRun,
+  PreviewDefinitionSummary,
+  PreviewOpenResult,
   ReviewMessageNode,
   ReviewNode,
   ReviewToolNode,
@@ -18,7 +20,7 @@ import { innermostReason } from './errors.js'
 import type { UserFeedback } from './errors.js'
 import { questionAnswersForSubmit, questionAnswersReady } from './remote-state.js'
 import { useRemote } from './use-remote.js'
-import type { CreateWorkspaceResult } from './use-remote.js'
+import type { CreateWorkspaceResult, PushState } from './use-remote.js'
 import { DraftStore } from './draft-store.js'
 
 type Tab = 'hosts' | 'tasks' | 'approval' | 'new'
@@ -124,6 +126,14 @@ export default function App() {
     }
   }, [attentionCount])
 
+  useEffect(() => {
+    const sessionId = new URLSearchParams(window.location.search).get('session')
+    if (sessionId === null || remote.connection === 'offline') return
+    remote.selectSession(sessionId)
+    setTab('tasks')
+    window.history.replaceState({}, '', `${window.location.pathname}${window.location.hash}`)
+  }, [remote.connection, remote.selectSession])
+
   const openTask = (sessionId: string) => {
     remote.selectSession(sessionId)
     setTab('tasks')
@@ -179,7 +189,16 @@ export default function App() {
             onRetry={remote.retryNow}
           />
         )}
-        {!disconnected && tab === 'hosts' && <HostsView workspaceCount={remote.workspaces.length} health={remote.health} host={remote.host} />}
+        {!disconnected && tab === 'hosts' && (
+          <HostsView
+            workspaceCount={remote.workspaces.length}
+            health={remote.health}
+            host={remote.host}
+            pushState={remote.pushState}
+            onEnablePush={remote.enablePush}
+            onDisablePush={remote.disablePush}
+          />
+        )}
         {!disconnected && tab === 'tasks' && (
           <TasksView
             sessions={remote.visibleSessions}
@@ -196,6 +215,8 @@ export default function App() {
             checkRuns={remote.checkRuns}
             onRunCheck={remote.runCheck}
             onCancelCheck={remote.cancelCheck}
+            previews={remote.previews}
+            onOpenPreview={remote.openPreview}
             promptText={promptText}
             setPromptText={setPromptText}
             draftVersion={draftVersion}
@@ -355,6 +376,9 @@ function HostsView(props: {
   workspaceCount: number
   health: ReturnType<typeof useRemote>['health']
   host: ReturnType<typeof useRemote>['host']
+  pushState: PushState
+  onEnablePush: () => Promise<boolean>
+  onDisablePush: () => Promise<boolean>
 }) {
   return (
     <section className="page-section">
@@ -386,8 +410,38 @@ function HostsView(props: {
           </div>
         </div>
       )}
+      <div className="card push-card">
+        <div className="row">
+          <strong>手机通知</strong>
+          <span className={`status ${props.pushState === 'enabled' ? 'running' : 'idle'}`}>
+            {pushStateLabel(props.pushState)}
+          </span>
+        </div>
+        <div className="muted">审批、Agent 问题和检查完成后，Mac 会主动通知你，不需要一直打开页面。</div>
+        {(props.pushState === 'disabled' || props.pushState === 'error') && (
+          <button className="small" onClick={() => void props.onEnablePush()}>开启通知</button>
+        )}
+        {props.pushState === 'enabled' && (
+          <button className="ghost small" onClick={() => void props.onDisablePush()}>关闭通知</button>
+        )}
+        {props.pushState === 'denied' && (
+          <div className="field-error">通知权限已拒绝，请在系统设置中允许后再试。</div>
+        )}
+      </div>
     </section>
   )
+}
+
+function pushStateLabel(state: PushState): string {
+  switch (state) {
+    case 'checking': return '检查中'
+    case 'unsupported': return '浏览器不支持'
+    case 'unconfigured': return 'Host 未配置'
+    case 'disabled': return '未开启'
+    case 'enabled': return '已开启'
+    case 'denied': return '权限被拒绝'
+    case 'error': return '需要重试'
+  }
 }
 
 function TasksView(props: {
@@ -405,6 +459,8 @@ function TasksView(props: {
   checkRuns: Record<string, CheckRun>
   onRunCheck: (checkId: string, sessionId?: string) => Promise<CheckRun | null>
   onCancelCheck: (runId: string) => Promise<boolean>
+  previews: PreviewDefinitionSummary[]
+  onOpenPreview: (previewId: string) => Promise<PreviewOpenResult | null>
   promptText: string
   setPromptText: (value: string) => void
   draftVersion: number
@@ -469,6 +525,8 @@ function TasksView(props: {
           checkRuns={props.checkRuns}
           onRunCheck={props.onRunCheck}
           onCancelCheck={props.onCancelCheck}
+          previews={props.previews}
+          onOpenPreview={props.onOpenPreview}
           promptText={props.promptText}
           setPromptText={props.setPromptText}
           draftVersion={props.draftVersion}
@@ -704,6 +762,8 @@ function SessionDetail(props: {
   checkRuns: Record<string, CheckRun>
   onRunCheck: (checkId: string, sessionId?: string) => Promise<CheckRun | null>
   onCancelCheck: (runId: string) => Promise<boolean>
+  previews: PreviewDefinitionSummary[]
+  onOpenPreview: (previewId: string) => Promise<PreviewOpenResult | null>
   promptText: string
   setPromptText: (value: string) => void
   draftVersion: number
@@ -776,6 +836,8 @@ function SessionDetail(props: {
         onRun={props.onRunCheck}
         onCancel={props.onCancelCheck}
       />
+
+      <PreviewPanel previews={props.previews} onOpen={props.onOpenPreview} />
 
       <div className="detail-segments" aria-label="任务详情视图">
         <button aria-pressed={detailView === 'conversation'} onClick={() => setDetailView('conversation')}>对话</button>
@@ -916,6 +978,69 @@ function CheckPanel(props: {
             {latestRun.exitCode !== undefined && <span className="muted">退出码 {latestRun.exitCode}</span>}
           </div>
           {latestRun.log !== '' && <pre className="check-log">{latestRun.log}</pre>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PreviewPanel(props: {
+  previews: PreviewDefinitionSummary[]
+  onOpen: (previewId: string) => Promise<PreviewOpenResult | null>
+}) {
+  const [selectedPreviewId, setSelectedPreviewId] = useState(props.previews[0]?.previewId ?? '')
+  const [opened, setOpened] = useState<PreviewOpenResult | null>(null)
+  const [opening, setOpening] = useState(false)
+
+  useEffect(() => {
+    if (props.previews.some(preview => preview.previewId === selectedPreviewId)) return
+    setSelectedPreviewId(props.previews[0]?.previewId ?? '')
+    setOpened(null)
+  }, [props.previews, selectedPreviewId])
+
+  const open = async () => {
+    if (selectedPreviewId === '' || opening) return
+    setOpening(true)
+    const result = await props.onOpen(selectedPreviewId)
+    setOpening(false)
+    if (result !== null) setOpened(result)
+  }
+
+  if (props.previews.length === 0) {
+    return (
+      <div className="preview-panel card">
+        <div className="row"><strong>实时预览</strong><span className="muted">未配置</span></div>
+        <div className="muted">配置一个 Mac 本机的开发服务器后，可以直接在手机里打开并手动操作。</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="preview-panel card">
+      <div className="row">
+        <strong>实时预览</strong>
+        <span className="muted">手机交互</span>
+      </div>
+      <div className="preview-controls">
+        <select value={selectedPreviewId} onChange={event => setSelectedPreviewId(event.target.value)} aria-label="选择实时预览">
+          {props.previews.map(preview => <option key={preview.previewId} value={preview.previewId}>{preview.label}</option>)}
+        </select>
+        <button className="small" disabled={opening} onClick={() => void open()}>
+          {opening ? '打开中…' : opened === null ? '打开预览' : '重新打开'}
+        </button>
+      </div>
+      {opened !== null && (
+        <div className="preview-frame-wrap">
+          <div className="preview-frame-head">
+            <span className="muted">令牌有效至 {new Date(opened.expiresAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>
+            <a href={opened.url} target="_blank" rel="noreferrer">新窗口</a>
+          </div>
+          <iframe
+            className="preview-frame"
+            title={opened.label}
+            src={opened.url}
+            sandbox="allow-forms allow-modals allow-popups allow-scripts allow-same-origin"
+          />
         </div>
       )}
     </div>

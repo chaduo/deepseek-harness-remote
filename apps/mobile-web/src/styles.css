@@ -1255,6 +1255,53 @@ input[aria-invalid='true'] {
   overflow-wrap: anywhere;
 }
 
+.preview-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.preview-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.preview-controls select {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.preview-frame-wrap {
+  display: grid;
+  gap: 8px;
+}
+
+.preview-frame-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.preview-frame-head a {
+  color: var(--accent);
+  font-size: 0.8125rem;
+  line-height: 20px;
+  text-decoration: none;
+}
+
+.preview-frame {
+  display: block;
+  width: 100%;
+  height: min(62vh, 520px);
+  min-height: 360px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
 .task-hero strong {
   font-size: 1.0625rem;
   font-weight: 600;

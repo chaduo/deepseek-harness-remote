@@ -36,6 +36,7 @@ describe('remote capability policy', () => {
   it('viewer can inspect models but cannot change them', () => {
     expect(() => authorizeRemoteMethod(viewer, 'session.models')).not.toThrow()
     expect(() => authorizeRemoteMethod(viewer, 'session.select-model')).toThrow(/lacks capability/)
+    expect(() => authorizeRemoteMethod(viewer, 'preview.open')).toThrow(/lacks capability/)
   })
 
   it('remote allowlist excludes privileged upstream methods', () => {
@@ -49,7 +50,11 @@ describe('remote capability policy', () => {
       'session.models': 'session:read',
       'session.select-model': 'session:prompt',
       'approval.respond': 'approval:respond',
+      'preview.open': 'preview:read',
+      'push.subscribe': 'push:manage',
     })
+    expect(isRemoteMethod('preview.open')).toBe(true)
+    expect(isRemoteMethod('push.vapid')).toBe(true)
     expect(isRemoteMethod('session.updateQueue')).toBe(false)
     expect(isRemoteMethod('session.cancel')).toBe(false)
   })

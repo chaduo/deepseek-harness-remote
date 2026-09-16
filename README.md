@@ -23,6 +23,8 @@ DSH Remote 通过你的私有 Tailscale 网络，为 [DeepSeek Harness](https://
 - 在适合手机阅读的任务对话中实时查看 Agent 消息与任务状态。
 - 从任务输入框排队下一条指令，或在运行中直接追加要求。
 - 回答 Agent 问题，允许或拒绝一次性权限请求。
+- 在 Mac 上触发预先配置的类型检查、测试或构建，并从手机查看实时日志。
+- 打开受保护的本地 Web 预览，在手机里完成手动交互验证。
 - 在适合手机浏览的工作区视图中搜索并继续既有任务。
 - 添加到主屏幕作为 PWA 使用，并在网络恢复后自动重连。
 
@@ -183,6 +185,13 @@ tailscale serve status
 | `DSH_REMOTE_IDENTITY_PROVIDER` | `tailscale` | 解析 Tailscale 对端身份；`none` 时仅接受 loopback |
 | `DSH_REMOTE_SECRET_STORE` | `mac-keychain` | 在 Keychain 中保存 Remote Host 设备私钥 |
 | `DSH_REMOTE_CAFFEINATE` | 安装后为 `auto` | Session 活跃时保持 Mac 唤醒 |
+| `DSH_REMOTE_CHECKS_FILE` | 空 | 允许手机触发的检查命令 JSON 文件 |
+| `DSH_REMOTE_PREVIEWS_FILE` | 空 | 允许手机打开的本机 Web 预览 JSON 文件 |
+| `DSH_REMOTE_PREVIEW_SECRET` | 每次启动随机生成 | 预览短期访问令牌的签名密钥；自定义值至少 16 字节 |
+| `DSH_REMOTE_VAPID_SUBJECT` | `mailto:dsh-remote@example.invalid` | Web Push 的 VAPID subject |
+| `DSH_REMOTE_VAPID_PUBLIC_KEY` / `DSH_REMOTE_VAPID_PRIVATE_KEY` | 自动生成并保存 | Web Push 密钥；也可以通过 `DSH_REMOTE_VAPID_KEYS_FILE` 指定密钥文件 |
+| `DSH_REMOTE_VAPID_KEYS_FILE` | `<state-file>.vapid.json` | 自动生成的 VAPID 密钥文件 |
+| `DSH_REMOTE_PUSH_SUBSCRIPTIONS_FILE` | `<state-file>.push.json` | 手机 Push 订阅持久化文件 |
 | `DSH_REMOTE_HARNESS_POLL_SECONDS` | `15` | Harness 可用性检查间隔 |
 | `DSH_REMOTE_NODE` | 安装时自动检测 | LaunchAgent 使用的 Node 可执行文件 |
 
@@ -193,6 +202,53 @@ DSH_INSTALL_HARNESS_SUPERVISOR=1 macos/launch-agent/install.sh
 ```
 
 默认仍由用户手动管理 Harness，让升级和凭据始终处于你的控制之下。
+
+### 手机触发项目检查
+
+检查命令采用显式白名单；手机只能选择 `checkId`，不能提交任意 shell 字符串。例如：
+
+```json
+[
+  {
+    "checkId": "typecheck",
+    "label": "TypeScript 类型检查",
+    "command": "pnpm",
+    "args": ["typecheck"],
+    "cwd": "/Users/me/Projects/my-app",
+    "timeoutMs": 120000
+  },
+  {
+    "checkId": "test",
+    "label": "单元测试",
+    "command": "pnpm",
+    "args": ["test"],
+    "cwd": "/Users/me/Projects/my-app",
+    "timeoutMs": 180000
+  }
+]
+```
+
+执行器使用 `spawn(command, args, { shell: false })`，限制同一工作目录同时只有一个检查，记录截断后的输出、退出码、超时和工作区指纹。重复提交带有相同幂等键的请求只会启动一次进程。
+
+### 手机打开 Web 预览
+
+预览目标也采用显式白名单，并且只接受 Mac 本机的 loopback 地址：
+
+```json
+[
+  {
+    "previewId": "my-app",
+    "label": "My App 开发预览",
+    "origin": "http://127.0.0.1:5173"
+  }
+]
+```
+
+设置 `DSH_REMOTE_PREVIEWS_FILE` 后，手机在任务页点击“打开预览”即可通过 Remote Host 的同源代理访问该服务。每次打开都会生成绑定用户和设备、默认 10 分钟过期的 HMAC 令牌；代理会转发页面资源和交互请求，并重写 HTML 中的根路径资源。项目如果把 API 或资源地址硬编码成绝对域名，应在开发服务器配置中设置正确的 base path。
+
+### 后台通知与 iPhone
+
+Remote Host 使用 VAPID Web Push，不让手机后台保持长连接。首次开启通知需要在页面按钮中完成授权；iPhone/iPad 需要 iOS 16.4 或更新版本，并先通过 Safari 的“添加到主屏幕”安装 PWA。入口使用 Tailscale Serve 提供的 HTTPS，因此不需要 Apple Developer 账号或 APNs 开发证书。通知点击后会打开对应的任务对话。
 
 ## 工作原理
 
@@ -224,8 +280,11 @@ Remote Host 只开放：
 - `agent-preset.list`、`agent-preset.select`
 - `session.models`、`session.select-model`
 - `approval.respond`、`question.respond`
+- `check.list`、`check.run`、`check.get`、`check.cancel`
+- `preview.list`、`preview.open`，以及带短期令牌的同源预览代理
+- `push.vapid`、`push.list`、`push.subscribe`、`push.unsubscribe`
 
-设置、凭据、本地路径选择/打开和 Preset 修改方法均不可远程调用。
+设置、凭据、本地路径选择/打开和 Preset 修改方法均不可远程调用；检查命令和预览目标必须由 Mac 端配置文件明确声明。
 
 ## 仓库结构
 

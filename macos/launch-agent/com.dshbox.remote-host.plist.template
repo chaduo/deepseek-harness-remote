@@ -32,6 +32,22 @@
     <string>__ALLOWED_DEVICE_IDS__</string>
     <key>DSH_REMOTE_SECRET_STORE</key>
     <string>__SECRET_STORE__</string>
+    <key>DSH_REMOTE_CHECKS_FILE</key>
+    <string>__CHECKS_FILE__</string>
+    <key>DSH_REMOTE_PREVIEWS_FILE</key>
+    <string>__PREVIEWS_FILE__</string>
+    <key>DSH_REMOTE_PREVIEW_SECRET</key>
+    <string>__PREVIEW_SECRET__</string>
+    <key>DSH_REMOTE_VAPID_SUBJECT</key>
+    <string>__VAPID_SUBJECT__</string>
+    <key>DSH_REMOTE_VAPID_PUBLIC_KEY</key>
+    <string>__VAPID_PUBLIC_KEY__</string>
+    <key>DSH_REMOTE_VAPID_PRIVATE_KEY</key>
+    <string>__VAPID_PRIVATE_KEY__</string>
+    <key>DSH_REMOTE_VAPID_KEYS_FILE</key>
+    <string>__VAPID_KEYS_FILE__</string>
+    <key>DSH_REMOTE_PUSH_SUBSCRIPTIONS_FILE</key>
+    <string>__PUSH_SUBSCRIPTIONS_FILE__</string>
     <key>DSH_REMOTE_NODE</key>
     <string>__NODE_BIN__</string>
   </dict>

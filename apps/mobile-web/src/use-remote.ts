@@ -8,6 +8,9 @@ import type {
   CheckDefinitionSummary,
   CheckRun,
   HostDescriptor,
+  PreviewDefinitionSummary,
+  PreviewOpenResult,
+  PushSubscriptionInput,
   QuestionAnswerItem,
   QuestionDecision,
   QuestionRequest,
@@ -33,6 +36,7 @@ import type { ApprovalDisplay, ResolvedApproval } from './remote-state.js'
 import { transport } from './transport.js'
 
 export type ConnectionState = 'connecting' | 'open' | 'reconnecting' | 'offline'
+export type PushState = 'checking' | 'unsupported' | 'unconfigured' | 'disabled' | 'enabled' | 'denied' | 'error'
 
 /**
  * Backoff between reconnect attempts. A Mac that is asleep, off the tailnet, or
@@ -244,6 +248,13 @@ function argumentsTextFor(event: SessionEventView | undefined): string | undefin
   return undefined
 }
 
+function applicationServerKey(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+  const binary = window.atob(padded)
+  return Uint8Array.from(binary, character => character.charCodeAt(0))
+}
+
 export function useRemote() {
   const trackerRef = useRef(new RemoteSequenceTracker())
   const rebaselineStreamsRef = useRef(new Set<RemoteEventStream>())
@@ -256,6 +267,8 @@ export function useRemote() {
   const [agentPresets, setAgentPresets] = useState<AgentPresetOption[]>([])
   const [checks, setChecks] = useState<CheckDefinitionSummary[]>([])
   const [checkRuns, setCheckRuns] = useState<Record<string, CheckRun>>({})
+  const [previews, setPreviews] = useState<PreviewDefinitionSummary[]>([])
+  const [pushState, setPushState] = useState<PushState>('checking')
   const [sessionModels, setSessionModels] = useState<SessionModels | null>(null)
   const [modelsLoading, setModelsLoading] = useState(false)
   const [searchResults, setSearchResults] = useState<SessionSearchItem[]>([])
@@ -462,13 +475,15 @@ export function useRemote() {
 
   const refreshAll = useCallback(async () => {
     try {
-      const [nextHealth, nextHost, nextWorkspaces, nextSessions, nextPresets, nextChecks] = await Promise.all([
+      const [nextHealth, nextHost, nextWorkspaces, nextSessions, nextPresets, nextChecks, nextPreviews, nextPush] = await Promise.all([
         transport.health(),
         transport.hostDescribe(),
         transport.listWorkspaces(),
         transport.listSessions(),
         transport.listAgentPresets(),
         transport.listChecks(),
+        transport.listPreviews(),
+        transport.pushVapid(),
       ])
       setHealth(nextHealth)
       setHost(nextHost)
@@ -477,6 +492,13 @@ export function useRemote() {
       setSessions(nextSessions.items)
       setAgentPresets(nextPresets.items)
       setChecks(nextChecks.items)
+      setPreviews(nextPreviews.items)
+      setPushState(current => {
+        if (current === 'enabled') return current
+        if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return 'unsupported'
+        if (!nextPush.configured) return 'unconfigured'
+        return current === 'denied' ? current : 'disabled'
+      })
       setError(null)
       setGapNotice('')
       // HTTP success refreshes data but does not prove the live event stream is
@@ -958,6 +980,80 @@ export function useRemote() {
     }
   }, [reportFailure])
 
+  const openPreview = useCallback(async (previewId: string): Promise<PreviewOpenResult | null> => {
+    try {
+      const result = await transport.openPreview({ previewId })
+      setError(null)
+      return {
+        ...result,
+        url: new URL(result.url, transport.baseUrl).toString(),
+      }
+    } catch (cause) {
+      reportFailure(cause, '预览没有打开', '请确认 Mac 上的预览服务正在运行。')
+      return null
+    }
+  }, [reportFailure])
+
+  const enablePush = useCallback(async (): Promise<boolean> => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+      setPushState('unsupported')
+      return false
+    }
+    try {
+      const vapid = await transport.pushVapid()
+      if (!vapid.configured || vapid.publicKey === undefined) {
+        setPushState('unconfigured')
+        return false
+      }
+      const permission = await Notification.requestPermission()
+      if (permission !== 'granted') {
+        setPushState('denied')
+        return false
+      }
+      const registration = await navigator.serviceWorker.ready
+      let subscription = await registration.pushManager.getSubscription()
+      if (subscription === null) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: applicationServerKey(vapid.publicKey) as unknown as BufferSource,
+        })
+      }
+      const json = subscription.toJSON()
+      const input: PushSubscriptionInput = {
+        endpoint: json.endpoint ?? subscription.endpoint,
+        keys: {
+          p256dh: json.keys?.p256dh ?? '',
+          auth: json.keys?.auth ?? '',
+        },
+        deviceName: navigator.userAgent.includes('iPhone') ? 'iPhone' : navigator.platform || '手机浏览器',
+      }
+      await transport.subscribePush(input)
+      setPushState('enabled')
+      setError(null)
+      return true
+    } catch (cause) {
+      setPushState('error')
+      reportFailure(cause, '通知没有开启', '请确认已将 DSH Remote 添加到主屏幕，并允许通知。')
+      return false
+    }
+  }, [reportFailure])
+
+  const disablePush = useCallback(async (): Promise<boolean> => {
+    try {
+      const registration = await navigator.serviceWorker.ready
+      const subscription = await registration.pushManager.getSubscription()
+      if (subscription !== null) {
+        await transport.unsubscribePush({ endpoint: subscription.endpoint })
+        await subscription.unsubscribe()
+      }
+      setPushState('disabled')
+      return true
+    } catch (cause) {
+      reportFailure(cause, '通知没有关闭', '请稍后重试。')
+      return false
+    }
+  }, [reportFailure])
+
   const sendPrompt = useCallback(async (
     sessionId: string,
     text: string,
@@ -1078,6 +1174,8 @@ export function useRemote() {
     agentPresets,
     checks,
     checkRuns,
+    previews,
+    pushState,
     sessionModels,
     modelsLoading,
     selectedSessionId,
@@ -1112,6 +1210,9 @@ export function useRemote() {
     createWorkspace,
     runCheck,
     cancelCheck,
+    openPreview,
+    enablePush,
+    disablePush,
     sendPrompt,
     respondApproval,
     respondQuestion,
