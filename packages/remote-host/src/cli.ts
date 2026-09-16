@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util'
 import { DeepSeekHarnessAdapter } from '@dsh-remote/adapter-deepseek'
 import { CaffeinateSupervisor } from './caffeinate.js'
+import { CheckRunner, loadCheckDefinitions } from './check-runner.js'
 import { ensureHostDeviceKey } from './host-device-key.js'
 import { JsonLogger } from './logger.js'
 import { defaultHostStateFile, loadOrCreateHostIdentity, persistHostDeviceKey } from './host-identity.js'
@@ -29,6 +30,7 @@ const { values } = parseArgs({
     'identity-provider': { type: 'string' },
     'allowed-device-ids': { type: 'string' },
     'secret-store': { type: 'string' },
+    'checks-file': { type: 'string' },
   },
   allowPositionals: false,
 })
@@ -70,6 +72,10 @@ if (!['mac-keychain', 'none'].includes(secretStoreMode)) {
 const secretStore = secretStoreMode === 'mac-keychain'
   ? new MacKeychainSecretStore({ logger })
   : undefined
+const checksFile = values['checks-file'] ?? process.env.DSH_REMOTE_CHECKS_FILE
+const checkRunner = checksFile === undefined
+  ? undefined
+  : new CheckRunner({ definitions: await loadCheckDefinitions(checksFile) })
 const deviceKey = secretStore !== undefined
   ? await (async () => {
       try {
@@ -97,6 +103,7 @@ const server = new RemoteHostServer({
   ...(caffeinate !== undefined && { caffeinate }),
   ...(identityProvider !== undefined && { identityProvider }),
   ...(allowedDeviceIds !== undefined && allowedDeviceIds.length > 0 && { allowedDeviceIds }),
+  ...(checkRunner !== undefined && { checkRunner }),
 })
 
 let shuttingDown = false

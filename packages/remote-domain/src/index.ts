@@ -213,6 +213,31 @@ export interface SessionSearchItem {
   snippet: string
 }
 
+export type CheckStatus = 'queued' | 'running' | 'passed' | 'failed' | 'cancelled' | 'interrupted'
+
+export interface CheckDefinitionSummary {
+  checkId: string
+  label: string
+  timeoutMs: number
+}
+
+export interface CheckRun {
+  runId: string
+  checkId: string
+  sessionId?: SessionId
+  status: CheckStatus
+  startedAt?: string
+  finishedAt?: string
+  exitCode?: number
+  log: string
+  workspaceFingerprint: string
+}
+
+export interface CheckRunInput {
+  checkId: string
+  sessionId?: SessionId
+}
+
 export interface RemoteApiMap {
   'host.describe': { payload: {}; result: HostDescriptor }
   'workspace.list': { payload: {}; result: WorkspaceListResult }
@@ -228,6 +253,10 @@ export interface RemoteApiMap {
   'session.prompt': { payload: PromptInput; result: PromptResult }
   'approval.respond': { payload: ApprovalDecision; result: { accepted: boolean } }
   'question.respond': { payload: QuestionDecision; result: { accepted: boolean } }
+  'check.list': { payload: {}; result: { items: CheckDefinitionSummary[] } }
+  'check.run': { payload: CheckRunInput; result: CheckRun }
+  'check.get': { payload: { runId: string }; result: CheckRun }
+  'check.cancel': { payload: { runId: string }; result: { accepted: boolean } }
 }
 
 export type RemoteMethod = keyof RemoteApiMap

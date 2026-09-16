@@ -2,6 +2,9 @@ import type {
   AgentPresetOption,
   AgentPresetSelectInput,
   ApprovalDecision,
+  CheckDefinitionSummary,
+  CheckRun,
+  CheckRunInput,
   HostDescriptor,
   PromptInput,
   QuestionDecision,
@@ -61,6 +64,10 @@ export interface AgentHostTransport {
   prompt(input: PromptInput, idempotencyKey?: string): Promise<void>
   approvalRespond(decision: ApprovalDecision): Promise<{ accepted: boolean }>
   questionRespond(decision: QuestionDecision): Promise<{ accepted: boolean }>
+  listChecks(): Promise<{ items: CheckDefinitionSummary[] }>
+  runCheck(input: CheckRunInput, idempotencyKey?: string): Promise<CheckRun>
+  getCheck(runId: string): Promise<CheckRun>
+  cancelCheck(runId: string, idempotencyKey?: string): Promise<{ accepted: boolean }>
   /**
    * `onOpen` fires once the stream handshake completes, before any frame is
    * yielded. Callers need it because an idle host sends nothing: without it,
@@ -186,6 +193,22 @@ export class DirectTailnetTransport implements AgentHostTransport {
       decision,
       `question:${decision.sessionId}:${decision.rpcId}`,
     )
+  }
+
+  listChecks(): Promise<{ items: CheckDefinitionSummary[] }> {
+    return this.rpc('check.list', {})
+  }
+
+  runCheck(input: CheckRunInput, idempotencyKey?: string): Promise<CheckRun> {
+    return this.rpc('check.run', input, idempotencyKey)
+  }
+
+  getCheck(runId: string): Promise<CheckRun> {
+    return this.rpc('check.get', { runId })
+  }
+
+  cancelCheck(runId: string, idempotencyKey?: string): Promise<{ accepted: boolean }> {
+    return this.rpc('check.cancel', { runId }, idempotencyKey)
   }
 
   async *events(kind: 'mux' | 'host' = 'mux', signal?: AbortSignal, onOpen?: () => void): AsyncGenerator<RemoteEventEnvelope> {

@@ -15,6 +15,8 @@ export type RemoteCapability =
   | 'session:steer'
   | 'approval:respond'
   | 'question:respond'
+  | 'check:read'
+  | 'check:run'
   | 'host:admin'
 
 export const ROLE_CAPABILITIES: Record<RemoteRole, readonly RemoteCapability[]> = {
@@ -27,6 +29,8 @@ export const ROLE_CAPABILITIES: Record<RemoteRole, readonly RemoteCapability[]> 
     'session:steer',
     'approval:respond',
     'question:respond',
+    'check:read',
+    'check:run',
     'host:admin',
   ],
   operator: [
@@ -38,6 +42,8 @@ export const ROLE_CAPABILITIES: Record<RemoteRole, readonly RemoteCapability[]> 
     'session:steer',
     'approval:respond',
     'question:respond',
+    'check:read',
+    'check:run',
   ],
   viewer: [
     'host:read',
@@ -65,6 +71,10 @@ export const REMOTE_METHOD_CAPABILITIES = {
   'session.select-model': 'session:prompt',
   'approval.respond': 'approval:respond',
   'question.respond': 'question:respond',
+  'check.list': 'check:read',
+  'check.get': 'check:read',
+  'check.run': 'check:run',
+  'check.cancel': 'check:run',
 } as const satisfies Record<string, RemoteCapability>
 
 export type RemoteMethod = keyof typeof REMOTE_METHOD_CAPABILITIES

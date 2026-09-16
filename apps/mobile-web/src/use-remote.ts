@@ -5,6 +5,8 @@ import type {
   AgentPresetOption,
   ApprovalDecision,
   ApprovalRequest,
+  CheckDefinitionSummary,
+  CheckRun,
   HostDescriptor,
   QuestionAnswerItem,
   QuestionDecision,
@@ -195,6 +197,21 @@ function asLiveSessionEvent(payload: unknown): LiveSessionEvent | undefined {
   return undefined
 }
 
+function asCheckRun(payload: unknown): CheckRun | undefined {
+  const value = record(payload)
+  const run = record(value?.run)
+  if (
+    typeof run?.runId === 'string'
+    && typeof run.checkId === 'string'
+    && typeof run.status === 'string'
+    && typeof run.log === 'string'
+    && typeof run.workspaceFingerprint === 'string'
+  ) {
+    return run as unknown as CheckRun
+  }
+  return undefined
+}
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined
 }
@@ -237,6 +254,8 @@ export function useRemote() {
   const [archivedSessionIds, setArchivedSessionIds] = useState<string[]>([])
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [agentPresets, setAgentPresets] = useState<AgentPresetOption[]>([])
+  const [checks, setChecks] = useState<CheckDefinitionSummary[]>([])
+  const [checkRuns, setCheckRuns] = useState<Record<string, CheckRun>>({})
   const [sessionModels, setSessionModels] = useState<SessionModels | null>(null)
   const [modelsLoading, setModelsLoading] = useState(false)
   const [searchResults, setSearchResults] = useState<SessionSearchItem[]>([])
@@ -443,12 +462,13 @@ export function useRemote() {
 
   const refreshAll = useCallback(async () => {
     try {
-      const [nextHealth, nextHost, nextWorkspaces, nextSessions, nextPresets] = await Promise.all([
+      const [nextHealth, nextHost, nextWorkspaces, nextSessions, nextPresets, nextChecks] = await Promise.all([
         transport.health(),
         transport.hostDescribe(),
         transport.listWorkspaces(),
         transport.listSessions(),
         transport.listAgentPresets(),
+        transport.listChecks(),
       ])
       setHealth(nextHealth)
       setHost(nextHost)
@@ -456,6 +476,7 @@ export function useRemote() {
       setArchivedSessionIds(nextWorkspaces.archivedSessionIds)
       setSessions(nextSessions.items)
       setAgentPresets(nextPresets.items)
+      setChecks(nextChecks.items)
       setError(null)
       setGapNotice('')
       // HTTP success refreshes data but does not prove the live event stream is
@@ -754,6 +775,11 @@ export function useRemote() {
       if (rpcId !== '') clearPendingQuestion(rpcId)
       return
     }
+    if (envelope.type === 'check.started' || envelope.type === 'check.output' || envelope.type === 'check.finished') {
+      const run = asCheckRun(envelope.payload)
+      if (run !== undefined) setCheckRuns(previous => ({ ...previous, [run.runId]: run }))
+      return
+    }
     if (envelope.type === 'session/queue' && envelope.sessionId !== undefined) {
       setQueuedBySession(previous => ({
         ...previous,
@@ -902,6 +928,36 @@ export function useRemote() {
     }
   }, [refreshAll])
 
+  const runCheck = useCallback(async (checkId: string, sessionId?: string): Promise<CheckRun | null> => {
+    try {
+      const run = await transport.runCheck(
+        { checkId, ...(sessionId !== undefined && { sessionId }) },
+        `check:${checkId}:${sessionId ?? 'workspace'}:${globalThis.crypto.randomUUID()}`,
+      )
+      setCheckRuns(previous => ({ ...previous, [run.runId]: run }))
+      setError(null)
+      return run
+    } catch (cause) {
+      reportFailure(cause, '检查没有启动', '请确认 Mac 在线，并检查项目检查配置。')
+      return null
+    }
+  }, [reportFailure])
+
+  const cancelCheck = useCallback(async (runId: string): Promise<boolean> => {
+    try {
+      const result = await transport.cancelCheck(runId, `check-cancel:${runId}`)
+      if (result.accepted) {
+        const run = await transport.getCheck(runId)
+        setCheckRuns(previous => ({ ...previous, [run.runId]: run }))
+      }
+      setError(null)
+      return result.accepted
+    } catch (cause) {
+      reportFailure(cause, '检查没有取消', '请稍后刷新检查状态。')
+      return false
+    }
+  }, [reportFailure])
+
   const sendPrompt = useCallback(async (
     sessionId: string,
     text: string,
@@ -1020,6 +1076,8 @@ export function useRemote() {
     sessions,
     visibleSessions,
     agentPresets,
+    checks,
+    checkRuns,
     sessionModels,
     modelsLoading,
     selectedSessionId,
@@ -1052,6 +1110,8 @@ export function useRemote() {
     selectAgentPreset,
     selectSessionModel,
     createWorkspace,
+    runCheck,
+    cancelCheck,
     sendPrompt,
     respondApproval,
     respondQuestion,

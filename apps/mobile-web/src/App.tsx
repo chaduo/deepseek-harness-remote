@@ -3,6 +3,8 @@ import type { ReactNode } from 'react'
 import { buildReviewTimeline, groupSessionsByWorkspace } from '@dsh-remote/domain'
 import type {
   ModelSelection,
+  CheckDefinitionSummary,
+  CheckRun,
   ReviewMessageNode,
   ReviewNode,
   ReviewToolNode,
@@ -190,6 +192,10 @@ export default function App() {
             queuedItems={remote.queuedItems}
             pendingApprovals={remote.pendingApprovals}
             pendingQuestions={remote.pendingQuestions}
+            checks={remote.checks}
+            checkRuns={remote.checkRuns}
+            onRunCheck={remote.runCheck}
+            onCancelCheck={remote.cancelCheck}
             promptText={promptText}
             setPromptText={setPromptText}
             draftVersion={draftVersion}
@@ -395,6 +401,10 @@ function TasksView(props: {
   queuedItems: ReturnType<typeof useRemote>['queuedItems']
   pendingApprovals: ReturnType<typeof useRemote>['pendingApprovals']
   pendingQuestions: ReturnType<typeof useRemote>['pendingQuestions']
+  checks: CheckDefinitionSummary[]
+  checkRuns: Record<string, CheckRun>
+  onRunCheck: (checkId: string, sessionId?: string) => Promise<CheckRun | null>
+  onCancelCheck: (runId: string) => Promise<boolean>
   promptText: string
   setPromptText: (value: string) => void
   draftVersion: number
@@ -455,6 +465,10 @@ function TasksView(props: {
           historyLoading={props.historyLoading}
           queuedItems={props.queuedItems}
           attentionCount={attentionBySession.get(selected.sessionId) ?? 0}
+          checks={props.checks}
+          checkRuns={props.checkRuns}
+          onRunCheck={props.onRunCheck}
+          onCancelCheck={props.onCancelCheck}
           promptText={props.promptText}
           setPromptText={props.setPromptText}
           draftVersion={props.draftVersion}
@@ -686,6 +700,10 @@ function SessionDetail(props: {
   historyLoading: boolean
   queuedItems: ReturnType<typeof useRemote>['queuedItems']
   attentionCount: number
+  checks: CheckDefinitionSummary[]
+  checkRuns: Record<string, CheckRun>
+  onRunCheck: (checkId: string, sessionId?: string) => Promise<CheckRun | null>
+  onCancelCheck: (runId: string) => Promise<boolean>
   promptText: string
   setPromptText: (value: string) => void
   draftVersion: number
@@ -750,6 +768,14 @@ function SessionDetail(props: {
           )}
         </div>
       </div>
+
+      <CheckPanel
+        checks={props.checks}
+        checkRuns={props.checkRuns}
+        sessionId={props.session.sessionId}
+        onRun={props.onRunCheck}
+        onCancel={props.onCancelCheck}
+      />
 
       <div className="detail-segments" aria-label="任务详情视图">
         <button aria-pressed={detailView === 'conversation'} onClick={() => setDetailView('conversation')}>对话</button>
@@ -839,6 +865,72 @@ function SessionDetail(props: {
           )}
     </div>
   )
+}
+
+function CheckPanel(props: {
+  checks: CheckDefinitionSummary[]
+  checkRuns: Record<string, CheckRun>
+  sessionId: string
+  onRun: (checkId: string, sessionId?: string) => Promise<CheckRun | null>
+  onCancel: (runId: string) => Promise<boolean>
+}) {
+  const [selectedCheckId, setSelectedCheckId] = useState(props.checks[0]?.checkId ?? '')
+
+  useEffect(() => {
+    if (props.checks.some(check => check.checkId === selectedCheckId)) return
+    setSelectedCheckId(props.checks[0]?.checkId ?? '')
+  }, [props.checks, selectedCheckId])
+
+  const latestRun = Object.values(props.checkRuns)
+    .filter(run => run.checkId === selectedCheckId && run.sessionId === props.sessionId)
+    .sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''))[0]
+  const active = latestRun?.status === 'queued' || latestRun?.status === 'running'
+
+  if (props.checks.length === 0) {
+    return (
+      <div className="check-panel card">
+        <div className="row"><strong>项目检查</strong><span className="muted">未配置</span></div>
+        <div className="muted">在 Mac Host 配置允许的检查命令后，手机可以在这里触发类型检查、测试或构建。</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="check-panel card">
+      <div className="row">
+        <strong>项目检查</strong>
+        <span className="muted">Mac 执行</span>
+      </div>
+      <div className="check-controls">
+        <select value={selectedCheckId} onChange={event => setSelectedCheckId(event.target.value)} aria-label="选择项目检查">
+          {props.checks.map(check => <option key={check.checkId} value={check.checkId}>{check.label}</option>)}
+        </select>
+        {active
+          ? <button className="ghost small" onClick={() => void props.onCancel(latestRun?.runId ?? '')}>取消检查</button>
+          : <button className="small" onClick={() => void props.onRun(selectedCheckId, props.sessionId)}>运行检查</button>}
+      </div>
+      {latestRun !== undefined && (
+        <div className="check-result">
+          <div className="row">
+            <span className={`check-status ${latestRun.status}`}>{checkStatusLabel(latestRun.status)}</span>
+            {latestRun.exitCode !== undefined && <span className="muted">退出码 {latestRun.exitCode}</span>}
+          </div>
+          {latestRun.log !== '' && <pre className="check-log">{latestRun.log}</pre>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function checkStatusLabel(status: CheckRun['status']): string {
+  switch (status) {
+    case 'queued': return '排队中'
+    case 'running': return '运行中'
+    case 'passed': return '通过'
+    case 'failed': return '失败'
+    case 'cancelled': return '已取消'
+    case 'interrupted': return '已中断'
+  }
 }
 
 function LatestAgentMessage(props: { message: ReviewMessageNode }) {

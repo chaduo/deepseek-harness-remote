@@ -1184,6 +1184,77 @@ input[aria-invalid='true'] {
   background: var(--surface);
 }
 
+.check-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.check-panel > .muted {
+  margin-top: -2px;
+}
+
+.check-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.check-controls select {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.check-result {
+  display: grid;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.check-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-strong);
+  color: var(--label-2);
+  font-size: 0.75rem;
+  line-height: 20px;
+}
+
+.check-status.queued,
+.check-status.running {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.check-status.passed {
+  background: var(--success-soft);
+  color: color-mix(in srgb, var(--success) 78%, var(--label));
+}
+
+.check-status.failed,
+.check-status.interrupted {
+  background: var(--danger-soft);
+  color: color-mix(in srgb, var(--danger) 80%, var(--label));
+}
+
+.check-log {
+  max-height: 180px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+  color: var(--label-2);
+  font: 0.75rem/18px var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .task-hero strong {
   font-size: 1.0625rem;
   font-weight: 600;

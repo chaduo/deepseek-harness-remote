@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createConnection, createServer as createNetServer, type Server as NetServer, type Socket } from 'node:net'
 import { extname, join, normalize } from 'node:path'
 import type { Duplex } from 'node:stream'
-import type { DeepSeekHarnessAdapter } from '@dsh-remote/adapter-deepseek'
+import type { DeepSeekHarnessAdapter, HarnessServerRequest } from '@dsh-remote/adapter-deepseek'
 import {
   isRemoteMethod,
   REMOTE_METHOD_CAPABILITIES,
@@ -14,6 +14,7 @@ import {
 import type {
   AgentPresetSelectInput,
   ApprovalDecision,
+  CheckRunInput,
   HostDescriptor,
   PromptInput,
   QuestionDecision,
@@ -32,6 +33,7 @@ import {
   type RemoteRpcResponse,
 } from '@dsh-remote/protocol'
 import { EventSequencer } from './event-sequencer.js'
+import { CheckRunner, type CheckRunnerEvent } from './check-runner.js'
 import { IdempotencyStore } from './idempotency-store.js'
 import { isLoopbackIp, parseProxyProtocolLine } from './proxy-protocol.js'
 import type { TailscaleIdentityProvider } from './tailscale-identity.js'
@@ -47,6 +49,8 @@ const IDEMPOTENT_REMOTE_METHODS = new Set([
   'session.prompt',
   'approval.respond',
   'question.respond',
+  'check.run',
+  'check.cancel',
 ])
 
 export interface RemoteHostServerOptions {
@@ -63,6 +67,7 @@ export interface RemoteHostServerOptions {
   caffeinate?: CaffeinateSupervisor
   identityProvider?: TailscaleIdentityProvider
   allowedDeviceIds?: Iterable<string>
+  checkRunner?: CheckRunner
 }
 
 interface ResolvedPrincipal {
@@ -88,6 +93,13 @@ export class RemoteHostServer {
   private readonly muxSequencer = new EventSequencer({ epoch: this.streamEpoch })
   private readonly hostSequencer = new EventSequencer({ epoch: this.streamEpoch })
   private readonly sockets = new Set<Duplex>()
+  private readonly eventSockets = new Map<'mux' | 'host', Set<Duplex>>([
+    ['mux', new Set<Duplex>()],
+    ['host', new Set<Duplex>()],
+  ])
+  private readonly checkRunner: CheckRunner | undefined
+  private readonly stopCheckEvents: (() => void) | undefined
+  private generatedCheckEventSerial = 0
 
   constructor(options: RemoteHostServerOptions) {
     this.hostId = options.hostId
@@ -97,6 +109,8 @@ export class RemoteHostServer {
     this.caffeinate = options.caffeinate
     this.identityProvider = options.identityProvider
     this.allowedDeviceIds = options.allowedDeviceIds === undefined ? undefined : new Set(options.allowedDeviceIds)
+    this.checkRunner = options.checkRunner
+    this.stopCheckEvents = this.checkRunner?.onEvent(event => this.broadcastCheckEvent(event))
     this.options = {
       host: options.host ?? '127.0.0.1',
       port: options.port ?? 3090,
@@ -135,7 +149,10 @@ export class RemoteHostServer {
 
   async close(): Promise<void> {
     this.caffeinate?.stop()
+    this.stopCheckEvents?.()
+    await this.checkRunner?.close()
     for (const socket of this.sockets) socket.destroy()
+    for (const sockets of this.eventSockets.values()) sockets.clear()
     this.adapter.close()
     await new Promise<void>((resolve, reject) => {
       this.server.close(error => error ? reject(error) : resolve())
@@ -369,6 +386,30 @@ export class RemoteHostServer {
         const decision = payload as QuestionDecision
         return await this.adapter.questionRespond(decision.rpcId, decision)
       }
+      case 'check.list':
+        return {
+          items: this.checkRunner?.listDefinitions().map(definition => ({
+            checkId: definition.checkId,
+            label: definition.label,
+            timeoutMs: definition.timeoutMs,
+          })) ?? [],
+        }
+      case 'check.run': {
+        if (this.checkRunner === undefined) throw new Error('project checks are not configured')
+        const input = payload as CheckRunInput
+        return this.checkRunner.start(input.checkId, input.sessionId)
+      }
+      case 'check.get': {
+        if (this.checkRunner === undefined) throw new Error('project checks are not configured')
+        const runId = (payload as { runId: string }).runId
+        const run = this.checkRunner.get(runId)
+        if (run === undefined) throw new Error(`unknown check run: ${runId}`)
+        return run
+      }
+      case 'check.cancel': {
+        if (this.checkRunner === undefined) throw new Error('project checks are not configured')
+        return this.checkRunner.cancel((payload as { runId: string }).runId)
+      }
       default:
         throw new Error(`method ${method} is allowlisted but not implemented yet`)
     }
@@ -447,6 +488,8 @@ export class RemoteHostServer {
     socket.once('error', () => controller.abort())
 
     const sequencer = kind === 'mux' ? this.muxSequencer : this.hostSequencer
+    this.eventSockets.get(kind)?.add(socket)
+    socket.once('close', () => this.eventSockets.get(kind)?.delete(socket))
 
     void (async () => {
       try {
@@ -461,6 +504,29 @@ export class RemoteHostServer {
         if (!socket.destroyed) socket.end()
       }
     })()
+  }
+
+  private broadcastCheckEvent(event: CheckRunnerEvent): void {
+    const frame = {
+      type: event.type,
+      ...(event.run.sessionId !== undefined && { sessionId: event.run.sessionId }),
+      run: event.run,
+      ...(event.chunk !== undefined && { chunk: event.chunk }),
+    }
+    const message: HarnessServerRequest = {
+      type: 'server-request',
+      rpcId: `check:${event.run.runId}:${this.generatedCheckEventSerial++}`,
+      method: event.type,
+      payload: frame,
+    }
+    const envelope = this.muxSequencer.assign(this.hostId, 'mux', message)
+    this.broadcastEvent('mux', envelope)
+  }
+
+  private broadcastEvent(kind: 'mux' | 'host', envelope: RemoteEventEnvelope): void {
+    for (const socket of this.eventSockets.get(kind) ?? []) {
+      this.writeWebSocketText(socket, envelope)
+    }
   }
 
   private writeWebSocketText(socket: Duplex, envelope: RemoteEventEnvelope): void {
