@@ -17,6 +17,7 @@ import type { UserFeedback } from './errors.js'
 import { questionAnswersForSubmit, questionAnswersReady } from './remote-state.js'
 import { useRemote } from './use-remote.js'
 import type { CreateWorkspaceResult } from './use-remote.js'
+import { DraftStore } from './draft-store.js'
 
 type Tab = 'hosts' | 'tasks' | 'approval' | 'new'
 
@@ -88,11 +89,27 @@ function Icon(props: { name: IconName }) {
 
 export default function App() {
   const remote = useRemote()
+  const draftStore = useMemo(() => new DraftStore(), [])
+  const [, setDraftRevision] = useState(0)
   const [tab, setTab] = useState<Tab>('tasks')
-  const [promptText, setPromptText] = useState('')
   const attentionCount = remote.pendingApprovals.length + remote.pendingQuestions.length
   const selectedSession = remote.sessions.find(session => session.sessionId === remote.selectedSessionId) ?? null
+  const promptText = remote.selectedSessionId === null ? '' : draftStore.get(remote.selectedSessionId)
+  const draftVersion = remote.selectedSessionId === null ? 0 : draftStore.version(remote.selectedSessionId)
   const previousAttentionRef = useRef(attentionCount)
+
+  const setPromptText = (value: string) => {
+    if (remote.selectedSessionId === null) return
+    draftStore.set(remote.selectedSessionId, value)
+    setDraftRevision(previous => previous + 1)
+  }
+
+  const clearDraftIfVersion = (version: number) => {
+    if (remote.selectedSessionId === null) return
+    if (draftStore.clearIfVersion(remote.selectedSessionId, version)) {
+      setDraftRevision(previous => previous + 1)
+    }
+  }
 
   useEffect(() => {
     document.title = attentionCount > 0 ? `(${attentionCount}) DSH Remote` : 'DSH Remote'
@@ -175,6 +192,8 @@ export default function App() {
             pendingQuestions={remote.pendingQuestions}
             promptText={promptText}
             setPromptText={setPromptText}
+            draftVersion={draftVersion}
+            clearDraftIfVersion={clearDraftIfVersion}
             onSelect={remote.selectSession}
             onNew={() => setTab('new')}
             onOpenApproval={() => setTab('approval')}
@@ -378,6 +397,8 @@ function TasksView(props: {
   pendingQuestions: ReturnType<typeof useRemote>['pendingQuestions']
   promptText: string
   setPromptText: (value: string) => void
+  draftVersion: number
+  clearDraftIfVersion: (version: number) => void
   onSelect: (sessionId: string | null) => void
   onNew: () => void
   onOpenApproval: () => void
@@ -436,6 +457,8 @@ function TasksView(props: {
           attentionCount={attentionBySession.get(selected.sessionId) ?? 0}
           promptText={props.promptText}
           setPromptText={props.setPromptText}
+          draftVersion={props.draftVersion}
+          clearDraftIfVersion={props.clearDraftIfVersion}
           onBack={() => props.onSelect(null)}
           onOpenApproval={props.onOpenApproval}
           onSend={(text, mode, idempotencyKey) => props.onSend(selected.sessionId, text, mode, idempotencyKey)}
@@ -665,6 +688,8 @@ function SessionDetail(props: {
   attentionCount: number
   promptText: string
   setPromptText: (value: string) => void
+  draftVersion: number
+  clearDraftIfVersion: (version: number) => void
   onBack: () => void
   onOpenApproval: () => void
   onSend: (text: string, mode: 'queue' | 'steer', idempotencyKey: string) => Promise<boolean>
@@ -689,6 +714,7 @@ function SessionDetail(props: {
   const submit = async (mode: 'queue' | 'steer') => {
     const text = props.promptText.trim()
     if (text === '' || sending) return
+    const submittedDraftVersion = props.draftVersion
     const fingerprint = `${mode}\u0000${text}`
     if (retryActionRef.current?.fingerprint !== fingerprint) {
       retryActionRef.current = { fingerprint, key: clientActionId('prompt') }
@@ -698,7 +724,7 @@ function SessionDetail(props: {
     setSending(false)
     if (sent) {
       retryActionRef.current = null
-      props.setPromptText('')
+      props.clearDraftIfVersion(submittedDraftVersion)
     }
   }
 
