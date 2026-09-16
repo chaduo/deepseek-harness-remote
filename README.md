@@ -1,6 +1,6 @@
 # DSH Remote
 
-[![CI](https://github.com/Zouu-X/dsh_remote/actions/workflows/ci.yml/badge.svg)](https://github.com/Zouu-X/dsh_remote/actions/workflows/ci.yml)
+[![CI](https://github.com/chaduo/deepseek-harness-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/chaduo/deepseek-harness-remote/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **让 DeepSeek Harness 运行在 Mac 上，在手机上随时控制。**
@@ -8,6 +8,19 @@
 DSH Remote 通过你的私有 Tailscale 网络，为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 提供专为手机设计的工作界面。离开电脑也能发起任务、实时跟进 Agent、处理审批并阅读结果，同时不把 Harness 暴露到公网。
 
 [English](README.en.md)
+
+## 项目定位
+
+本仓库是基于 [Zouu-X/dsh_remote](https://github.com/Zouu-X/dsh_remote) 的公开二次开发版本。上游已经提供了 DeepSeek Harness 的远程通信、Session、Approval、事件流和 Tailscale 入口；本项目在此基础上补足手机端日常使用中更容易遇到的工作流问题，并保留清晰的安全边界。
+
+| 能力 | 上游基础 | 本项目补充 |
+| --- | --- | --- |
+| 远程对话 | Mobile PWA、Session、流式事件、Approval | 多会话草稿隔离，切换会话后保留未发送内容 |
+| 远程验证 | 基础 Remote Host/Client | 白名单检查、实时日志、超时/取消、幂等和工作区指纹 |
+| 手机验收 | Tailscale 远程入口 | 受保护的本地 Web 预览，可在手机上完成手动交互 |
+| 后台触达 | Service Worker 外壳缓存 | VAPID Web Push、通知点击跳转到对应 Session |
+
+这里的重点是可复现的工程实现：每一项新增能力都有独立的模块、协议边界和自动化测试；项目不会把二次开发描述成从零实现 DeepSeek Harness Remote。
 
 <!-- README_MEDIA_SLOT:HERO -->
 
@@ -39,8 +52,8 @@ DSH Remote 通过你的私有 Tailscale 网络，为 [DeepSeek Harness](https://
 ### 1. 运行引导式安装
 
 ```bash
-git clone https://github.com/Zouu-X/dsh_remote.git dsh-remote
-cd dsh-remote
+git clone https://github.com/chaduo/deepseek-harness-remote.git
+cd deepseek-harness-remote
 ./macos/launch-agent/setup.sh
 ```
 
@@ -65,6 +78,16 @@ https://<你的-Mac>.<你的-tailnet>.ts.net
 ```
 
 添加到主屏幕，即可获得接近原生应用的启动体验。
+
+### iPhone 版本支持
+
+| 环境 | 可验证内容 |
+| --- | --- |
+| iOS 15.1+ | Safari 访问、远程对话、Session、Approval、草稿、检查和预览等核心链路 |
+| iOS 16.4+ | 在添加到主屏幕后启用 Web Push、锁屏通知和通知点击跳转 |
+| macOS | 运行 DeepSeek Harness、Remote Host、Tailscale Serve 和本地项目检查 |
+
+iOS 15.1 可以测试主要远程控制体验，但系统版本低于 16.4，不能验收 iPhone Web Push。PWA 推送不需要 Apple Developer Account；原生 iOS App、TestFlight 和 App Store 发布另行需要开发者账号。
 
 ## 不打扰工作的手机流程
 
@@ -270,6 +293,17 @@ DeepSeek Harness · 127.0.0.1:3080
 
 手机 UI 只依赖 `AgentHostTransport`，不依赖 Harness 内部类型。所有 DeepSeek Harness 上游调用集中在唯一 Adapter 中；协议、领域模型、认证策略、客户端传输和 Host 进程保持为独立包。
 
+### 关键技术选型
+
+| 问题 | 方案 | 目的 |
+| --- | --- | --- |
+| 手机端形态 | React + Vite PWA | 复用现有 Web 能力，同时覆盖 Android 和 iPhone |
+| 远程边界 | 类型化 `RemoteApiMap` + capability allowlist | 明确手机可以调用的能力，避免暴露任意 Harness RPC |
+| 远程检查 | `spawn(command, args, { shell: false })` | 手机只能选择 Mac 端预先声明的检查，不能提交任意 shell 字符串 |
+| 本地预览 | loopback 目标白名单 + 短期 HMAC Token | 让手机访问 Mac 本地开发服务，同时避免把 Host 变成开放代理 |
+| 后台通知 | VAPID Web Push + Service Worker | 不要求手机后台永久保持 WebSocket |
+| Host 状态 | JSON 文件原子替换 + Keychain | 适合个人 Mac 部署，并保持设备密钥、VAPID 和订阅跨重启 |
+
 ### Remote API 边界
 
 Remote Host 只开放：
@@ -321,6 +355,19 @@ corepack pnpm dev:host
 ```bash
 node tools/remote-host-check/check.mjs --base http://127.0.0.1:3090
 ```
+
+当前自动化验证覆盖：真实本地 HTTP 预览目标、真实子进程检查、日志截断、超时与取消、预览 Token 过期、路径逃逸拦截、Push 订阅 RPC、失效 Push Endpoint 清理，以及服务器事件到通知的转换。
+
+## 已知边界
+
+- 这是面向个人 Mac 和私有单用户 tailnet 的项目，不是多租户 SaaS。
+- 手机触发的检查必须提前写入 JSON 白名单；远程请求不能传入任意命令。
+- Web 预览只接受 Mac loopback 地址；使用绝对域名写死资源地址的项目可能还需要配置自己的 dev server base path。
+- iPhone 后台 Web Push 需要 iOS 16.4+、已添加到主屏幕的 PWA、通知权限和持久化 VAPID 密钥。
+
+## 上游与致谢
+
+本项目继承 [Zouu-X/dsh_remote](https://github.com/Zouu-X/dsh_remote) 的 MIT 许可代码和基础架构，并在其上进行移动工作流、远程检查、预览代理、Push 通知和文档测试方面的二次开发。感谢上游项目提供了清晰的 Remote Host/Client 分层和 DeepSeek Harness 适配基础。
 
 DSH Remote 是独立社区项目，与 DeepSeek 没有隶属或背书关系。
 

@@ -1,6 +1,6 @@
 # DSH Remote
 
-[![CI](https://github.com/Zouu-X/dsh_remote/actions/workflows/ci.yml/badge.svg)](https://github.com/Zouu-X/dsh_remote/actions/workflows/ci.yml)
+[![CI](https://github.com/chaduo/deepseek-harness-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/chaduo/deepseek-harness-remote/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **Run DeepSeek Harness on your Mac. Control it from your phone.**
@@ -8,6 +8,19 @@
 DSH Remote gives [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) a focused, mobile-first workspace over your private Tailscale network. Start tasks away from your desk, follow the Agent live, handle approvals, and read the result without exposing Harness to the public internet.
 
 [中文说明](README.md)
+
+## Project scope
+
+This repository is a public secondary development based on [Zouu-X/dsh_remote](https://github.com/Zouu-X/dsh_remote). The upstream project provides the DeepSeek Harness remote protocol, sessions, approvals, event streaming, and Tailscale entry point. This repository extends that foundation with the mobile workflows needed for everyday use while keeping the remote surface explicit and private.
+
+| Capability | Upstream foundation | Added in this repository |
+| --- | --- | --- |
+| Remote conversation | Mobile PWA, sessions, streaming events, approvals | Versioned per-session drafts that survive conversation switching |
+| Remote verification | Remote Host/Client foundation | Allowlisted checks, live logs, timeout/cancel, idempotency, and workspace fingerprints |
+| Mobile acceptance | Tailscale remote entry point | Protected local Web preview for manual interaction from a phone |
+| Background delivery | Service Worker app-shell cache | VAPID Web Push and notification deep links to the matching session |
+
+The contribution is intentionally presented as engineering on top of an open-source base rather than a from-scratch reimplementation.
 
 <!-- README_MEDIA_SLOT:HERO -->
 
@@ -24,6 +37,8 @@ DSH Remote gives [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harn
 - Follow Agent messages and task status live from a phone-friendly conversation.
 - Queue the next instruction or steer a running session from the task composer.
 - Answer Agent questions and allow or reject one-time permission requests.
+- Trigger allowlisted type checks, tests, or builds on the Mac and read bounded logs from the phone.
+- Open a protected local Web preview and perform manual interaction checks from the task view.
 - Search and resume existing tasks from a phone-friendly workspace view.
 - Install the site on your home screen as a PWA with automatic reconnect handling.
 
@@ -38,8 +53,8 @@ You need:
 ### 1. Run the guided setup
 
 ```bash
-git clone https://github.com/Zouu-X/dsh_remote.git dsh-remote
-cd dsh-remote
+git clone https://github.com/chaduo/deepseek-harness-remote.git
+cd deepseek-harness-remote
 ./macos/launch-agent/setup.sh
 ```
 
@@ -64,6 +79,16 @@ https://<your-mac>.<your-tailnet>.ts.net
 ```
 
 Add it to the home screen for an app-like launch experience.
+
+### iPhone support
+
+| Environment | What can be verified |
+| --- | --- |
+| iOS 15.1+ | Safari access, remote conversations, sessions, approvals, drafts, checks, and previews |
+| iOS 16.4+ | Web Push, lock-screen notifications, and notification deep links after installing the PWA |
+| macOS | DeepSeek Harness, Remote Host, Tailscale Serve, and local project checks |
+
+iOS 15.1 can be used to verify the core remote-control experience, but Web Push on iPhone requires iOS 16.4 or newer. The PWA push path does not require an Apple Developer Account. Native iOS apps, TestFlight, and App Store distribution have separate account requirements.
 
 ## A phone workflow that stays out of the way
 
@@ -184,6 +209,12 @@ tailscale serve status
 | `DSH_REMOTE_IDENTITY_PROVIDER` | `tailscale` | Resolve Tailscale peer identity; `none` accepts loopback only |
 | `DSH_REMOTE_SECRET_STORE` | `mac-keychain` | Store the Remote Host device private key in Keychain |
 | `DSH_REMOTE_CAFFEINATE` | `auto` after install | Keep the Mac awake while sessions are active |
+| `DSH_REMOTE_CHECKS_FILE` | empty | JSON allowlist of checks that the phone may trigger |
+| `DSH_REMOTE_PREVIEWS_FILE` | empty | JSON allowlist of local Web preview targets |
+| `DSH_REMOTE_PREVIEW_SECRET` | random per start | HMAC secret for short-lived preview tokens |
+| `DSH_REMOTE_VAPID_SUBJECT` | `mailto:dsh-remote@example.invalid` | Web Push VAPID subject |
+| `DSH_REMOTE_VAPID_KEYS_FILE` | `<state-file>.vapid.json` | Persistent VAPID key pair |
+| `DSH_REMOTE_PUSH_SUBSCRIPTIONS_FILE` | `<state-file>.push.json` | Persistent device-scoped Push subscriptions |
 | `DSH_REMOTE_HARNESS_POLL_SECONDS` | `15` | Harness availability polling interval |
 | `DSH_REMOTE_NODE` | detected during install | Node binary used by the LaunchAgent |
 
@@ -194,6 +225,12 @@ DSH_INSTALL_HARNESS_SUPERVISOR=1 macos/launch-agent/install.sh
 ```
 
 Manual Harness management remains the default so Harness upgrades and credentials stay under your control.
+
+### Allowlisted checks and local previews
+
+Phone-triggered checks use an explicit JSON allowlist. A request selects a `checkId`; it cannot submit an arbitrary shell string. The runner uses `spawn(command, args, { shell: false })`, bounds output, supports timeout/cancel, and records a workspace fingerprint.
+
+Preview targets use the same explicit configuration style and accept only Mac loopback origins such as `http://127.0.0.1:5173`. Each open operation creates a short-lived HMAC token bound to the authenticated user and device. The proxy rewrites root-relative HTML resources so common dev servers work inside the mobile task view.
 
 ## How it works
 
@@ -214,6 +251,17 @@ DeepSeek Harness · 127.0.0.1:3080
 ```
 
 The mobile UI depends on an `AgentHostTransport`, not on Harness internals. All upstream DeepSeek Harness calls are centralized in one adapter, while the protocol, domain models, authentication policy, client transport, and host process remain separate packages.
+
+### Key technical choices
+
+| Problem | Choice | Reason |
+| --- | --- | --- |
+| Mobile client | React + Vite PWA | Reuse the Web UI and cover Android and iPhone without a native app |
+| Remote boundary | Typed `RemoteApiMap` plus capability allowlist | Keep the phone surface explicit and avoid exposing arbitrary Harness RPCs |
+| Project checks | `spawn(command, args, { shell: false })` | Remote input selects a known check rather than becoming a shell command |
+| Preview access | Loopback target allowlist plus short-lived HMAC token | Reach local dev servers without creating an open proxy |
+| Background delivery | VAPID Web Push plus Service Worker | Avoid a permanent phone WebSocket while the app is backgrounded |
+| Host state | Atomic JSON writes plus macOS Keychain | Keep personal Mac deployment simple while preserving identity and Push state |
 
 ### Remote API boundary
 
@@ -263,6 +311,19 @@ Run the Remote Host self-check after building and starting Harness:
 ```bash
 node tools/remote-host-check/check.mjs --base http://127.0.0.1:3090
 ```
+
+The automated coverage includes real local HTTP preview targets, real child-process checks, bounded logs, timeout and cancel behavior, expired preview tokens, path-escape rejection, Push subscription RPCs, stale endpoint removal, and server-event-to-notification delivery.
+
+## Known boundaries
+
+- This project targets a personal Mac and a private single-user tailnet; it is not a multi-tenant SaaS.
+- Phone-triggered checks must be declared in a Mac-side JSON allowlist.
+- Preview targets must be Mac loopback origins. Projects that hard-code an absolute API origin may need their own dev-server base-path configuration.
+- iPhone background Web Push requires iOS 16.4 or newer, an installed Home Screen PWA, notification permission, and persistent VAPID keys.
+
+## Upstream and attribution
+
+This repository inherits MIT-licensed code and the core architecture from [Zouu-X/dsh_remote](https://github.com/Zouu-X/dsh_remote). The secondary development focuses on mobile continuity, remote checks, protected previews, Push notifications, and the related documentation and tests. Thanks to the upstream project for the Remote Host/Client split and the DeepSeek Harness adapter foundation.
 
 DSH Remote is an independent community project and is not affiliated with or endorsed by DeepSeek.
 
