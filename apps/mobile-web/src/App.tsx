@@ -23,6 +23,7 @@ import { useRemote } from './use-remote.js'
 import type { CreateWorkspaceResult, PushState } from './use-remote.js'
 import { DraftStore } from './draft-store.js'
 import { composerCopy } from './composer-model.js'
+import { compactConversationText, compactReasoningLabel, conversationNodes } from './conversation-model.js'
 import {
   displayHostName,
   sortTaskChats,
@@ -880,10 +881,6 @@ function SessionDetail(props: {
   onRefreshHistory: () => void
 }) {
   const nodes = useMemo(() => buildReviewTimeline(props.history?.events ?? []), [props.history])
-  const lastMessage = useMemo(
-    () => [...nodes].reverse().find((node): node is ReviewMessageNode => node.kind === 'message' && node.role === 'assistant'),
-    [nodes],
-  )
   const [detailView, setDetailView] = useState<'conversation' | 'review'>('conversation')
   const [sending, setSending] = useState(false)
   const retryActionRef = useRef<{ fingerprint: string; key: string } | null>(null)
@@ -940,8 +937,8 @@ function SessionDetail(props: {
       <PreviewPanel previews={props.previews} onOpen={props.onOpenPreview} />
 
       <div className="detail-segments" aria-label="任务详情视图">
-        <button aria-pressed={detailView === 'conversation'} onClick={() => setDetailView('conversation')}>对话</button>
-        <button aria-pressed={detailView === 'review'} onClick={() => setDetailView('review')}>执行记录</button>
+        <button className="detail-segment-conversation" aria-pressed={detailView === 'conversation'} onClick={() => setDetailView('conversation')}>对话</button>
+        <button className="detail-segment-review" aria-pressed={detailView === 'review'} onClick={() => setDetailView('review')}>执行记录</button>
       </div>
 
       {detailView === 'review'
@@ -958,18 +955,15 @@ function SessionDetail(props: {
           )
         : (
             <>
-              {lastMessage !== undefined && (
-                <LatestAgentMessage key={lastMessage.seq} message={lastMessage} />
-              )}
-
-              {props.historyLoading && props.history === null && <div className="card loading-card">正在同步任务进度…</div>}
-
-              {lastMessage === undefined && props.historyLoading === false && (
-                <div className="empty-state compact">
-                  <strong>{props.session.blank ? '描述你要完成的工作' : '暂无可展示的消息'}</strong>
-                  <span>指令会在这台 Mac 上的当前安全策略下执行。</span>
-                </div>
-              )}
+              <ConversationView
+                nodes={nodes}
+                history={props.history}
+                historyLoading={props.historyLoading}
+                loadingOlder={props.loadingOlder}
+                historyNotice={props.historyNotice}
+                onLoadOlder={props.onLoadOlder}
+                blankSession={props.session.blank}
+              />
 
               {props.queuedItems.length > 0 && (
                 <div className="queued-box">
@@ -1162,45 +1156,98 @@ function checkStatusLabel(status: CheckRun['status']): string {
   }
 }
 
-function LatestAgentMessage(props: { message: ReviewMessageNode }) {
-  const [expanded, setExpanded] = useState(false)
-  const [canExpand, setCanExpand] = useState(false)
-  const bodyRef = useRef<HTMLDivElement>(null)
-
-  useLayoutEffect(() => {
-    if (expanded) return
-    const body = bodyRef.current
-    if (body === null) return
-
-    const measure = () => {
-      setCanExpand(body.scrollHeight > body.clientHeight + 1)
-    }
-    measure()
-
-    if (typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(measure)
-    observer.observe(body)
-    return () => observer.disconnect()
-  }, [expanded, props.message.text])
+function ConversationView(props: {
+  nodes: readonly ReviewNode[]
+  history: SessionHistoryPage | null
+  historyLoading: boolean
+  loadingOlder: boolean
+  historyNotice: UserFeedback | null
+  onLoadOlder: () => void
+  blankSession: boolean
+}) {
+  const items = useMemo(() => conversationNodes(props.nodes), [props.nodes])
+  const firstSeq = props.history?.events[0]?.sequence
 
   return (
-    <div className={`last-message${expanded ? ' expanded' : ' collapsed'}${canExpand ? ' can-expand' : ''}`}>
-      <div className="last-message-head">
-        <div className="muted">Agent 最新回复</div>
-        {canExpand && (
-          <button
-            className="ghost small"
-            aria-controls="latest-agent-message"
-            aria-expanded={expanded}
-            onClick={() => setExpanded(value => !value)}
-          >
-            {expanded ? '收起' : '展开全文'}
-          </button>
-        )}
+    <section className="conversation-view" aria-label="对话内容">
+      {props.historyNotice !== null && <div className="review-notice"><FeedbackNotice feedback={props.historyNotice} /></div>}
+
+      {props.history !== null && props.history.hasMore && (
+        <button className="conversation-load-older ghost" disabled={props.loadingOlder} onClick={props.onLoadOlder}>
+          {props.loadingOlder ? '加载中…' : `查看更早对话（从 #${firstSeq ?? 0} 开始）`}
+        </button>
+      )}
+
+      {props.historyLoading && props.history === null && <div className="card loading-card">正在同步任务进度…</div>}
+
+      {props.historyLoading === false && items.length === 0 && (
+        <div className="empty-state compact">
+          <strong>{props.blankSession ? '描述你要完成的工作' : '暂无可展示的消息'}</strong>
+          <span>指令会在这台 Mac 上的当前安全策略下执行。</span>
+        </div>
+      )}
+
+      {items.length > 0 && (
+        <div className="conversation-list">
+          {items.map(node => node.kind === 'message'
+            ? <ConversationMessage key={`message:${node.seq}`} node={node} />
+            : <ConversationTool key={`tool:${node.seq}`} node={node} />)}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function ConversationMessage(props: { node: ReviewMessageNode }) {
+  const node = props.node
+  const [expanded, setExpanded] = useState(false)
+  const preview = useMemo(() => compactConversationText(node.text), [node.text])
+  const reasoningLabel = node.reasoning === undefined ? '' : compactReasoningLabel(node.reasoning)
+  const label = node.role === 'user' ? '你' : node.partial === true ? 'Agent · 进行中' : 'Agent'
+
+  return (
+    <article className={`conversation-message ${node.role}${node.partial === true ? ' partial' : ''}`}>
+      <div className="conversation-message-head">
+        <span className={`conversation-message-role ${node.role}`}>{label}</span>
+        <span className="muted">{new Date(node.timestamp).toLocaleTimeString()}</span>
+        {node.text !== '' && <CopyButton value={node.text} label="复制" />}
       </div>
-      <div className="last-message-body" id="latest-agent-message" ref={bodyRef}>
-        <div className="message-text">{props.message.text}</div>
-      </div>
+      {node.text !== '' && (
+        <div className={`conversation-message-body${node.role === 'user' ? ' user-bubble' : ''}`}>
+          {expanded ? node.text : preview.text}
+        </div>
+      )}
+      {(preview.truncated || reasoningLabel !== '') && (
+        <div className="conversation-message-meta">
+          {preview.truncated && (
+            <button className="conversation-expand ghost" onClick={() => setExpanded(value => !value)}>
+              {expanded ? '收起' : '展开全文'}
+            </button>
+          )}
+          {reasoningLabel !== '' && (
+            <details className="conversation-reasoning">
+              <summary>{reasoningLabel}</summary>
+              <pre className="preview">{node.reasoning}</pre>
+            </details>
+          )}
+        </div>
+      )}
+    </article>
+  )
+}
+
+function ConversationTool(props: { node: Extract<ReviewNode, { kind: 'tool' }> }) {
+  const node = props.node
+  const statusKey = node.resultText === undefined
+    ? 'running'
+    : node.resultIsError === true ? 'error' : 'done'
+  const status = statusKey === 'error' ? '失败' : statusKey === 'done' ? '完成' : '运行中'
+
+  return (
+    <div className={`conversation-tool status-${statusKey}`}>
+      <span className="conversation-tool-mark" aria-hidden="true" />
+      <span className="conversation-tool-title">{node.title}</span>
+      <span className="muted">{status}</span>
     </div>
   )
 }
