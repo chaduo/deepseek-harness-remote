@@ -22,6 +22,7 @@ import { questionAnswersForSubmit, questionAnswersReady } from './remote-state.j
 import { useRemote } from './use-remote.js'
 import type { CreateWorkspaceResult, PushState } from './use-remote.js'
 import { DraftStore } from './draft-store.js'
+import { composerCopy } from './composer-model.js'
 import {
   displayHostName,
   sortTaskChats,
@@ -886,6 +887,7 @@ function SessionDetail(props: {
   const [detailView, setDetailView] = useState<'conversation' | 'review'>('conversation')
   const [sending, setSending] = useState(false)
   const retryActionRef = useRef<{ fingerprint: string; key: string } | null>(null)
+  const actionCopy = composerCopy(props.session.running, sending)
 
   const submit = async (mode: 'queue' | 'steer') => {
     const text = props.promptText.trim()
@@ -989,7 +991,7 @@ function SessionDetail(props: {
                     className="composer-input"
                     value={props.promptText}
                     onChange={event => props.setPromptText(event.target.value)}
-                    placeholder={props.session.running ? '追加说明或调整方向…' : '发送下一条指令…'}
+                    placeholder={actionCopy.placeholder}
                     rows={1}
                   />
                   <div className="composer-bar">
@@ -1002,20 +1004,24 @@ function SessionDetail(props: {
                     <div className="composer-actions">
                       {props.session.running && (
                         <button
-                          className="ghost"
+                          className="ghost composer-queue"
+                          aria-label="排到下一轮"
                           disabled={sending || props.promptText.trim() === ''}
                           onClick={() => void submit('queue')}
                         >
-                          排到下一轮
+                          <span className="composer-queue-label-long">排到下一轮</span>
+                          <span className="composer-queue-label-short" aria-hidden="true">排队</span>
                         </button>
                       )}
                       <button
                         className="composer-send"
+                        aria-label={actionCopy.sendLabel}
+                        title={actionCopy.sendLabel}
                         disabled={sending || props.promptText.trim() === ''}
-                        onClick={() => void submit(props.session.running ? 'steer' : 'queue')}
+                        onClick={() => void submit(actionCopy.mode)}
                       >
                         <Icon name="send" />
-                        <span>{sending ? '发送中…' : props.session.running ? '立即追加' : '发送指令'}</span>
+                        <span className="composer-send-label">{actionCopy.sendLabel}</span>
                       </button>
                     </div>
                   </div>

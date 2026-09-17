@@ -1898,9 +1898,9 @@ button.review-action {
 }
 
 .composer-card {
-  padding: 6px 6px 6px;
+  padding: 8px;
   border: 1px solid var(--line-2);
-  border-radius: var(--radius-lg);
+  border-radius: 26px;
   background: var(--surface);
   box-shadow: var(--shadow-2);
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
@@ -1913,11 +1913,11 @@ button.review-action {
 
 .composer-input {
   width: 100%;
-  min-height: 44px;
-  height: 44px;
+  min-height: 68px;
+  height: 68px;
   max-height: 38vh;
   margin: 0;
-  padding: 10px 12px 4px;
+  padding: 12px 14px 6px;
   border: 0;
   background: transparent;
   font-size: 1rem;
@@ -1927,7 +1927,7 @@ button.review-action {
 }
 
 .composer-card:focus-within .composer-input {
-  height: 96px;
+  height: 92px;
 }
 
 .composer-input:focus-visible {
@@ -1950,7 +1950,7 @@ button.review-action {
 }
 
 .composer-actions button {
-  min-height: 44px;
+  min-height: 42px;
   padding: 9px 14px;
   border-radius: var(--radius-pill);
   font-size: 0.8125rem;
@@ -1961,6 +1961,7 @@ button.review-action {
 .composer-send {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 5px;
   background: var(--accent);
   border-color: var(--accent);
@@ -1970,6 +1971,10 @@ button.review-action {
 .composer-send svg {
   width: 15px;
   height: 15px;
+}
+
+.composer-queue-label-short {
+  display: none;
 }
 
 /* Model + reasoning pickers read as DSH composer chips inside the bar. */
@@ -2004,27 +2009,77 @@ button.review-action {
  * chip is short enough to always size to its content.
  */
 .composer-bar .model-controls label:first-child {
-  max-width: 40vw;
+  flex: 1 1 56%;
+  max-width: none;
 }
 
 .composer-bar .model-controls label:last-child {
-  flex: 0 0 auto;
+  flex: 1 1 44%;
 }
 
-/* Narrow phones give the chips their own row so neither side gets squeezed. */
+/* Keep the compact controls beside the action on phones, like the native DSH composer. */
 @media (max-width: 480px) {
   .composer-bar {
-    flex-wrap: wrap;
-    row-gap: 4px;
+    flex-wrap: nowrap;
+    gap: 4px;
   }
 
   .composer-bar .model-controls {
-    flex: 1 1 100%;
+    flex: 1 1 auto;
+    gap: 0;
   }
 
   .composer-actions {
-    flex: 1 1 100%;
-    justify-content: flex-end;
+    flex: 0 0 auto;
+    gap: 4px;
+  }
+
+  .composer-bar .model-controls label > span {
+    display: none;
+  }
+
+  .composer-bar .model-controls select {
+    min-height: 42px;
+    padding: 4px 17px 4px 6px;
+    background-position: right 3px center;
+    background-size: 12px 12px;
+    font-size: 0.75rem;
+  }
+
+  .composer-bar .model-status {
+    display: none;
+  }
+
+  .composer-queue {
+    min-width: 0;
+    padding-right: 9px !important;
+    padding-left: 9px !important;
+    font-size: 0.75rem !important;
+  }
+
+  .composer-queue-label-long {
+    display: none;
+  }
+
+  .composer-queue-label-short {
+    display: inline;
+  }
+
+  .composer-send {
+    width: 42px;
+    min-width: 42px;
+    height: 42px;
+    padding: 0 !important;
+    border-radius: var(--radius-pill);
+  }
+
+  .composer-send svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .composer-send-label {
+    display: none;
   }
 }
 

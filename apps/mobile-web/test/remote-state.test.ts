@@ -13,6 +13,7 @@ import {
   taskChatsForProject,
   toggleTaskProject,
 } from '../src/task-page-model.js'
+import { composerCopy } from '../src/composer-model.js'
 import type { ApprovalRequest, QuestionRequest } from '@dsh-remote/domain'
 
 const approval: ApprovalRequest = {
@@ -46,6 +47,24 @@ describe('mobile remote state', () => {
       { sessionId: 'a-2', workspaceId: 'workspace-a', updatedAt: 5 },
     ]
     expect(taskChatsForProject(chats, 'workspace-a').map(chat => chat.sessionId)).toEqual(['a-2', 'a-1'])
+  })
+
+  it('keeps the composer action copy aligned with the session state', () => {
+    expect(composerCopy(false, false)).toEqual({
+      placeholder: '发送下一条指令…',
+      sendLabel: '发送指令',
+      mode: 'queue',
+    })
+    expect(composerCopy(true, false)).toEqual({
+      placeholder: '追加说明或调整方向…',
+      sendLabel: '立即追加',
+      mode: 'steer',
+    })
+    expect(composerCopy(true, true)).toEqual({
+      placeholder: '追加说明或调整方向…',
+      sendLabel: '发送中…',
+      mode: 'steer',
+    })
   })
 
   it('clears an acknowledged approval and records its visible outcome immediately', () => {
