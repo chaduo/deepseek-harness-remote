@@ -92,6 +92,7 @@ export default function App() {
   const [, setDraftRevision] = useState(0)
   const [tab, setTab] = useState<Tab>('tasks')
   const [taskMenuOpen, setTaskMenuOpen] = useState(false)
+  const [newTaskWorkspaceId, setNewTaskWorkspaceId] = useState<string | undefined>()
   const attentionCount = remote.pendingApprovals.length + remote.pendingQuestions.length
   const selectedSession = remote.sessions.find(session => session.sessionId === remote.selectedSessionId) ?? null
   const promptText = remote.selectedSessionId === null ? '' : draftStore.get(remote.selectedSessionId)
@@ -248,8 +249,9 @@ export default function App() {
               setTaskMenuOpen(false)
               remote.selectSession(sessionId)
             }}
-            onNew={() => {
+            onNew={workspaceId => {
               setTaskMenuOpen(false)
+              setNewTaskWorkspaceId(workspaceId)
               setTab('new')
             }}
             onOpenApproval={() => setTab('approval')}
@@ -283,6 +285,7 @@ export default function App() {
         {!disconnected && tab === 'new' && (
           <NewTaskView
             workspaces={remote.workspaces}
+            initialWorkspaceId={newTaskWorkspaceId}
             connection={remote.connection}
             agentPresets={remote.agentPresets}
             sessionModels={remote.sessionModels}
@@ -550,7 +553,7 @@ function TasksView(props: {
   draftVersion: number
   clearDraftIfVersion: (version: number) => void
   onSelect: (sessionId: string | null) => void
-  onNew: () => void
+  onNew: (workspaceId?: string) => void
   onOpenApproval: () => void
   onSend: (sessionId: string, text: string, mode?: 'queue' | 'steer', idempotencyKey?: string) => Promise<boolean>
   sessionModels: SessionModels | null
@@ -627,7 +630,7 @@ function TasksView(props: {
               <button
                 className="task-home-row-action"
                 aria-label={'在 ' + workspace.title + ' 中新建聊天'}
-                onClick={() => props.onNew()}
+                onClick={() => props.onNew(workspace.workspaceId)}
               >
                 <Icon name="edit" />
               </button>
@@ -642,7 +645,7 @@ function TasksView(props: {
       <section className="task-home-section task-home-chats" aria-labelledby="task-home-chats">
         <div className="task-home-section-heading">
           <h2 id="task-home-chats">聊天</h2>
-          <button className="task-home-heading-action" aria-label="新建聊天" onClick={props.onNew}>
+          <button className="task-home-heading-action" aria-label="新建聊天" onClick={() => props.onNew()}>
             <Icon name="edit" />
           </button>
         </div>
@@ -691,7 +694,7 @@ function TasksView(props: {
             aria-label="搜索聊天"
           />
         </div>
-        <button className="task-home-chat-button" onClick={props.onNew}>
+        <button className="task-home-chat-button" onClick={() => props.onNew()}>
           <Icon name="edit" />
           <span>聊天</span>
         </button>
@@ -1235,6 +1238,7 @@ function ModelControls(props: {
 
 function NewTaskView(props: {
   workspaces: WorkspaceSummary[]
+  initialWorkspaceId?: string | undefined
   connection: ReturnType<typeof useRemote>['connection']
   agentPresets: ReturnType<typeof useRemote>['agentPresets']
   sessionModels: SessionModels | null
@@ -1247,7 +1251,7 @@ function NewTaskView(props: {
   onComplete: () => void
   onCancel: () => void
 }) {
-  const [workspaceId, setWorkspaceId] = useState('')
+  const [workspaceId, setWorkspaceId] = useState(props.initialWorkspaceId ?? '')
   const [text, setText] = useState('')
   const defaultPreset = props.agentPresets.find(preset => preset.isDefault && preset.broken === undefined)?.id ?? ''
   const [agentPreset, setAgentPreset] = useState('')
