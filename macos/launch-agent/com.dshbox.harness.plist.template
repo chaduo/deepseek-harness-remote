@@ -20,6 +20,8 @@
     <string>3080</string>
     <key>DSH_REMOTE_TRUSTED_HOST</key>
     <string>__TRUSTED_HOST__</string>
+    <key>DSH_REMOTE_HARNESS_AUTH_URL_FILE</key>
+    <string>__HARNESS_AUTH_URL_FILE__</string>
   </dict>
 
   <key>RunAtLoad</key>

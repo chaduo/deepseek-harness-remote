@@ -45,6 +45,8 @@ PY
 }
 
 HARNESS_URL="${DSH_REMOTE_HARNESS_URL:-http://127.0.0.1:3080}"
+HARNESS_AUTH_URL_FILE="${DSH_REMOTE_HARNESS_AUTH_URL_FILE:-$HOME/.dsh-remote/harness-auth-url}"
+HARNESS_AUTH_COOKIE_FILE="${DSH_REMOTE_HARNESS_AUTH_COOKIE_FILE:-$HOME/.dsh-remote/harness-cookie}"
 HARNESS_POLL_SECONDS="${DSH_REMOTE_HARNESS_POLL_SECONDS:-15}"
 REMOTE_PORT="${DSH_REMOTE_PORT:-3090}"
 STATIC_DIR="${DSH_REMOTE_STATIC_DIR:-$REPO_ROOT/apps/mobile-web/dist}"
@@ -69,6 +71,8 @@ sed -e "s#__REPO_ROOT__#$REPO_ROOT#g" \
     -e "s#__HOME__#$HOME#g" \
     -e "s#__NODE_BIN__#$NODE_BIN#g" \
     -e "s#__HARNESS_URL__#$HARNESS_URL#g" \
+    -e "s#__HARNESS_AUTH_URL_FILE__#$HARNESS_AUTH_URL_FILE#g" \
+    -e "s#__HARNESS_AUTH_COOKIE_FILE__#$HARNESS_AUTH_COOKIE_FILE#g" \
     -e "s#__HARNESS_POLL_SECONDS__#$HARNESS_POLL_SECONDS#g" \
     -e "s#__REMOTE_PORT__#$REMOTE_PORT#g" \
     -e "s#__STATIC_DIR__#$STATIC_DIR#g" \
@@ -106,6 +110,7 @@ if [[ "${DSH_INSTALL_HARNESS_SUPERVISOR:-0}" == "1" ]]; then
       -e "s#__HOME__#$HOME#g" \
       -e "s#__NODE_BIN__#$NODE_BIN#g" \
       -e "s#__TRUSTED_HOST__#$TRUSTED_HOST#g" \
+      -e "s#__HARNESS_AUTH_URL_FILE__#$HARNESS_AUTH_URL_FILE#g" \
       "$HARNESS_TEMPLATE" > "$HARNESS_TARGET"
   launchctl bootstrap "gui/$UID" "$HARNESS_TARGET"
   launchctl kickstart -k "gui/$UID/$HARNESS_LABEL"

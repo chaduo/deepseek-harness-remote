@@ -16,6 +16,10 @@
   <dict>
     <key>DSH_REMOTE_HARNESS_URL</key>
     <string>__HARNESS_URL__</string>
+    <key>DSH_REMOTE_HARNESS_AUTH_URL_FILE</key>
+    <string>__HARNESS_AUTH_URL_FILE__</string>
+    <key>DSH_REMOTE_HARNESS_AUTH_COOKIE_FILE</key>
+    <string>__HARNESS_AUTH_COOKIE_FILE__</string>
     <key>DSH_REMOTE_HARNESS_POLL_SECONDS</key>
     <string>__HARNESS_POLL_SECONDS__</string>
     <key>DSH_REMOTE_PORT</key>

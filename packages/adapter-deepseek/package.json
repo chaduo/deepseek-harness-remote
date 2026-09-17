@@ -19,7 +19,11 @@
   },
   "dependencies": {
     "@dsh-remote/domain": "workspace:*",
-    "@dsh-remote/protocol": "workspace:*"
+    "@dsh-remote/protocol": "workspace:*",
+    "ws": "^8.21.3"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
 }

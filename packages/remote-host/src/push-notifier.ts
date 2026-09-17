@@ -5,6 +5,10 @@ import type { RemotePrincipal } from '@dsh-remote/protocol'
 import webpush from 'web-push'
 import type { PushSubscription as WebPushSubscription, RequestOptions, VapidKeys } from 'web-push'
 
+// web-push is CommonJS. Depending on the Node loader that starts the LaunchAgent,
+// a default import can be either the API object or a namespace containing it.
+const webPushApi = ((webpush as unknown as { default?: typeof webpush }).default ?? webpush)
+
 const PUSH_TTL_SECONDS = 5 * 60
 
 export interface VapidDetails {
@@ -104,7 +108,7 @@ export async function loadOrCreateVapidDetails(filePath: string, subject: string
     if (!isFileMissing(error)) throw error
   }
 
-  const keys: VapidKeys = webpush.generateVAPIDKeys()
+  const keys: VapidKeys = webPushApi.generateVAPIDKeys()
   const details: VapidDetails = { subject, ...keys }
   await mkdir(dirname(filePath), { recursive: true })
   await writeFile(filePath, JSON.stringify(details, null, 2), { encoding: 'utf8', mode: 0o600 })
@@ -123,7 +127,7 @@ export class PushNotifier {
   constructor(options: PushNotifierOptions) {
     this.vapid = { ...options.vapid }
     this.persist = options.persist
-    this.send = options.send ?? ((subscription, payload, sendOptions) => webpush.sendNotification(subscription, payload, sendOptions))
+    this.send = options.send ?? ((subscription, payload, sendOptions) => webPushApi.sendNotification(subscription, payload, sendOptions))
     this.now = options.now ?? Date.now
     this.newId = options.newId ?? (() => crypto.randomUUID())
     for (const subscription of options.initialSubscriptions ?? []) {

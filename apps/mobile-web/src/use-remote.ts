@@ -810,6 +810,26 @@ export function useRemote() {
       return
     }
 
+    if (envelope.type === 'session/status' || envelope.type === 'session/activity') {
+      const payload = record(envelope.payload)
+      const sessionId = envelope.sessionId ?? (typeof payload?.sessionId === 'string' ? payload.sessionId : undefined)
+      if (sessionId !== undefined) {
+        setSessions(previous => previous.map(session => session.sessionId === sessionId
+          ? {
+              ...session,
+              ...(envelope.type === 'session/status' && typeof payload?.running === 'boolean' && { running: payload.running }),
+              ...(envelope.type === 'session/activity' && typeof payload?.updatedAt === 'number' && { updatedAt: payload.updatedAt }),
+            }
+          : session))
+      }
+      return
+    }
+
+    if (envelope.type === 'session/added' || envelope.type === 'session/removed') {
+      void refreshAll()
+      return
+    }
+
     if (envelope.type === 'session/event' && envelope.sessionId === selectedSessionIdRef.current) {
       const live = asLiveSessionEvent(envelope.payload)
       if (live !== undefined) {

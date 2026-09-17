@@ -54,10 +54,16 @@ const logger = new JsonLogger()
 const stateFile = values['state-file'] ?? process.env.DSH_REMOTE_STATE_FILE ?? defaultHostStateFile()
 const identity = loadOrCreateHostIdentity({ stateFile })
 const harnessUrl = values['harness-url'] ?? process.env.DSH_REMOTE_HARNESS_URL ?? 'http://127.0.0.1:3080'
+const harnessAuthUrl = nonEmpty(process.env.DSH_REMOTE_HARNESS_AUTH_URL)
+const harnessAuthUrlFile = nonEmpty(process.env.DSH_REMOTE_HARNESS_AUTH_URL_FILE)
+const harnessAuthCookieFile = nonEmpty(process.env.DSH_REMOTE_HARNESS_AUTH_COOKIE_FILE) ?? `${stateFile}.harness-cookie`
 const staticDir = values['static-dir'] ?? process.env.DSH_REMOTE_STATIC_DIR
 const adapter = new DeepSeekHarnessAdapter({
   baseUrl: harnessUrl,
   hostId: identity.hostId,
+  ...(harnessAuthUrl !== undefined && { authUrl: harnessAuthUrl }),
+  ...(harnessAuthUrlFile !== undefined && { authUrlFile: harnessAuthUrlFile }),
+  authCookieFile: harnessAuthCookieFile,
 })
 const port = values.port ?? process.env.DSH_REMOTE_PORT
 const userId = values['user-id'] ?? process.env.DSH_REMOTE_USER_ID

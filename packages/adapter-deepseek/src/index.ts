@@ -1,3 +1,5 @@
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import type {
   AgentPresetOption,
   AgentPresetSelectInput,
@@ -17,6 +19,7 @@ import type {
   WorkspaceSummary,
 } from '@dsh-remote/domain'
 import type { EventId, HostId } from '@dsh-remote/protocol'
+import NodeWebSocket from 'ws'
 
 /**
  * The only package that knows the DeepSeek Harness upstream wire contract.
@@ -50,12 +53,6 @@ interface HarnessClientRequest {
   payload: unknown
 }
 
-interface HarnessClientResponse {
-  type: 'client-response'
-  rpcId: string
-  result: { ok: true; value: unknown }
-}
-
 interface HarnessServerResponse<T> {
   type: 'server-response'
   rpcId: string
@@ -65,6 +62,7 @@ interface HarnessServerResponse<T> {
 export interface WebSocketLike {
   readonly readyState: number
   addEventListener(type: 'open' | 'message' | 'close' | 'error', listener: (event: WebSocketEventLike) => void): void
+  send(data: string): void
   close(): void
 }
 
@@ -73,12 +71,22 @@ export interface WebSocketEventLike {
   data?: unknown
 }
 
-export type WebSocketConstructor = new (url: string) => WebSocketLike
+export interface WebSocketOptions {
+  headers?: Record<string, string>
+}
+
+export type WebSocketConstructor = new (url: string, options?: WebSocketOptions) => WebSocketLike
 
 export interface DeepSeekHarnessAdapterOptions {
   baseUrl: string
   /** Stable id for the Mac host; also used to derive deterministic event ids. */
   hostId: HostId
+  /** Full authenticated dsh web URL, normally read from the LaunchAgent auth file. */
+  authUrl?: string
+  /** File containing the full authenticated dsh web URL printed at startup. */
+  authUrlFile?: string
+  /** Optional 0600 file used to cache the exchanged browser-session cookie. */
+  authCookieFile?: string
   fetch?: typeof fetch
   WebSocket?: WebSocketConstructor
   newId?: () => string
@@ -96,60 +104,108 @@ export class HarnessAdapterError extends Error {
   }
 }
 
+class NodeWebSocketLike implements WebSocketLike {
+  constructor(private readonly socket: NodeWebSocket) {}
+
+  get readyState(): number {
+    return this.socket.readyState
+  }
+
+  addEventListener(type: 'open' | 'message' | 'close' | 'error', listener: (event: WebSocketEventLike) => void): void {
+    if (type === 'message') {
+      this.socket.on('message', data => listener({ type, data: data.toString() }))
+      return
+    }
+    this.socket.on(type, () => listener({ type }))
+  }
+
+  send(data: string): void {
+    this.socket.send(data)
+  }
+
+  close(): void {
+    this.socket.close()
+  }
+}
+
+const DefaultWebSocket = class extends NodeWebSocketLike {
+  constructor(url: string, options?: WebSocketOptions) {
+    super(new NodeWebSocket(url, options))
+  }
+} as WebSocketConstructor
+
 export class DeepSeekHarnessAdapter {
   private readonly baseUrl: string
   private readonly hostId: HostId
+  private readonly authUrl: string | undefined
+  private readonly authUrlFile: string | undefined
+  private readonly authCookieFile: string | undefined
   private readonly fetchImpl: typeof fetch
   private readonly WebSocketImpl: WebSocketConstructor
   private readonly newId: () => string
   private readonly timeoutMs: number
   private readonly sockets = new Set<WebSocketLike>()
+  private readonly pendingRemoteEvents = new Map<string, { clientId: string; eventId: string; kind: 'approval' | 'question' }>()
+  private authCookie: string | undefined
+  private authBootstrap: Promise<void> | undefined
 
   constructor(options: DeepSeekHarnessAdapterOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '')
     this.hostId = options.hostId
+    this.authUrl = options.authUrl
+    this.authUrlFile = options.authUrlFile
+    this.authCookieFile = options.authCookieFile
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis)
-    this.WebSocketImpl = options.WebSocket ?? (globalThis.WebSocket as unknown as WebSocketConstructor)
+    this.WebSocketImpl = options.WebSocket ?? DefaultWebSocket
     this.newId = options.newId ?? (() => crypto.randomUUID())
     this.timeoutMs = options.timeoutMs ?? 30_000
   }
 
   async hostDescribe(): Promise<HostDescriptor> {
     const value = await this.call<{
-      version: string
-      cwd: string
-      provider?: string
-      model?: string
-      attachedSessions: number
-    }>('host.describe', {})
+      items: Array<{
+        cwd?: string
+        projections?: { values: Record<string, unknown> }
+      }>
+    }>('session.list', {})
+
+    const first = value.items[0]
+    const selection = first?.projections?.values.modelSelection
+    const current = isRecord(selection) && isRecord(selection.lastUsed) ? selection.lastUsed : undefined
 
     return {
       hostId: this.hostId,
-      version: value.version,
-      cwd: value.cwd,
-      ...(value.provider !== undefined && { provider: value.provider }),
-      ...(value.model !== undefined && { model: value.model }),
-      attachedSessions: value.attachedSessions,
+      version: process.env.DSH_REMOTE_HARNESS_VERSION ?? 'current',
+      cwd: first?.cwd ?? process.cwd(),
+      ...(typeof current?.provider === 'string' && { provider: current.provider }),
+      ...(typeof current?.model === 'string' && { model: current.model }),
+      attachedSessions: value.items.length,
       principalUserId: '',
       principalDeviceId: '',
     }
   }
 
   async workspaceList(): Promise<WorkspaceListResult> {
-    const value = await this.call<{
-      items: Array<{
-        workspaceId: string
-        path: string
-        title: string
-        sessionIds: string[]
-        createdAt: string
-        updatedAt: string
-      }>
-      archivedSessionIds: string[]
-    }>('workspace.list', {})
+    const value = await this.firstRemoteStreamValue('workspace/follow', {}) as {
+      type?: string
+      value?: {
+        items: Array<{
+          workspaceId: string
+          path: string
+          title: string
+          sessionIds: string[]
+          createdAt: string
+          updatedAt: string
+        }>
+        archivedSessionIds: string[]
+      }
+    }
+    if (value.type !== 'baseline' || value.value === undefined) {
+      throw new HarnessAdapterError('unexpected workspace/follow opening frame', 'protocol')
+    }
 
     return {
-      items: value.items.map(workspace => ({
+      items: value.value.items.map(workspace => ({
         workspaceId: workspace.workspaceId,
         path: workspace.path,
         title: workspace.title,
@@ -157,7 +213,7 @@ export class DeepSeekHarnessAdapter {
         createdAt: workspace.createdAt,
         updatedAt: workspace.updatedAt,
       })),
-      archivedSessionIds: value.archivedSessionIds,
+      archivedSessionIds: value.value.archivedSessionIds,
     }
   }
 
@@ -172,7 +228,7 @@ export class DeepSeekHarnessAdapter {
         updatedAt: string
       }
       created: boolean
-    }>('workspace.create', { path: input.path })
+    }>('workspace.create', input)
 
     return {
       created: value.created,
@@ -196,7 +252,6 @@ export class DeepSeekHarnessAdapter {
           running: boolean
           blank: boolean
           cwd?: string
-          agentPreset?: string
           origin?: 'subagent'
           projections?: {
             asOfSeq: number
@@ -204,7 +259,7 @@ export class DeepSeekHarnessAdapter {
           }
         }>
       }>('session.list', {}),
-      this.call<{ items: Array<{ workspaceId: string; sessionIds: string[] }> }>('workspace.list', {}),
+      this.workspaceList(),
     ])
 
     const workspaceBySession = new Map<string, string>()
@@ -214,6 +269,7 @@ export class DeepSeekHarnessAdapter {
 
     return sessions.items.map(item => {
       const title = item.projections?.values.title
+      const agentPreset = item.projections?.values.agentPreset
       const workspaceId = workspaceBySession.get(item.sessionId)
       return {
         sessionId: item.sessionId,
@@ -224,7 +280,7 @@ export class DeepSeekHarnessAdapter {
         ...(workspaceId !== undefined && { workspaceId }),
         ...(typeof title === 'string' && { title }),
         ...(item.cwd !== undefined && { cwd: item.cwd }),
-        ...(item.agentPreset !== undefined && { agentPreset: item.agentPreset }),
+        ...(typeof agentPreset === 'string' && { agentPreset }),
         ...(item.origin !== undefined && { origin: item.origin }),
       }
     })
@@ -276,14 +332,20 @@ export class DeepSeekHarnessAdapter {
   }
 
   async sessionModels(sessionId: string): Promise<SessionModels> {
-    const value = await this.call<SessionModels>('session.models', { sessionId })
+    void sessionId
+    const value = await this.call<{
+      default: SessionModels['current']
+      routableProviders: string[]
+      groups: SessionModels['groups']
+      failures: SessionModels['failures']
+    }>('session.models', {})
     return {
       current: {
-        provider: value.current.provider,
-        model: value.current.model,
-        ...(value.current.reasoningEffort !== undefined && { reasoningEffort: value.current.reasoningEffort }),
+        provider: value.default.provider,
+        model: value.default.model,
+        ...(value.default.reasoningEffort !== undefined && { reasoningEffort: value.default.reasoningEffort }),
       },
-      routable: value.routable,
+      routable: value.routableProviders.length > 0,
       groups: value.groups.map(group => ({
         id: group.id,
         name: group.name,
@@ -318,8 +380,16 @@ export class DeepSeekHarnessAdapter {
 
   async sessionHistory(query: SessionHistoryQuery): Promise<SessionHistoryPage> {
     const { sessionId, ...page } = query
+    const listed = await this.call<{
+      items: Array<{
+        sessionId: string
+        projections?: { asOfSeq: number }
+      }>
+    }>('session.list', {})
+    const throughSeq = listed.items.find(item => item.sessionId === sessionId)?.projections?.asOfSeq ?? -1
     const value = await this.call<{
-      events: Array<{
+      records: Array<{
+        type: 'event'
         event: {
           type: string
           seq: number
@@ -331,11 +401,12 @@ export class DeepSeekHarnessAdapter {
       hasMore: boolean
     }>('session.history', {
       sessionId,
+      throughSeq,
       ...(page.beforeSeq !== undefined && { beforeSeq: page.beforeSeq }),
       ...(page.maxMessages !== undefined && { maxMessages: page.maxMessages }),
     })
 
-    const events: SessionEventView[] = value.events.map(entry => ({
+    const events: SessionEventView[] = value.records.map(entry => ({
       eventId: this.eventId(sessionId, entry.event.seq),
       sessionId,
       sequence: entry.event.seq,
@@ -358,30 +429,23 @@ export class DeepSeekHarnessAdapter {
   }
 
   async approvalRespond(rpcId: string, decision: ApprovalDecision): Promise<{ accepted: boolean }> {
-    const value = await this.respond(rpcId, {
-      sessionId: decision.sessionId,
-      approvalId: decision.approvalId,
-      outcome: decision.outcome,
-    })
+    const value = await this.respond(rpcId, decision.outcome)
     return { accepted: value.accepted }
   }
 
   async questionRespond(rpcId: string, decision: QuestionDecision): Promise<{ accepted: boolean }> {
-    const value = await this.respond(rpcId, {
-      sessionId: decision.sessionId,
-      answer: decision.answer,
-    })
+    const value = await this.respond(rpcId, decision.answer)
     return { accepted: value.accepted }
   }
 
-  /** Yields upstream mux server-requests until the socket closes or aborts. */
+  /** Yields normalized mux server-requests until the upstream streams close. */
   async *muxEvents(signal?: AbortSignal): AsyncGenerator<HarnessServerRequest> {
-    yield * this.websocketEvents('/api/events.mux', signal)
+    yield * this.normalizedEvents(signal, true)
   }
 
-  /** Yields upstream host server-requests until the socket closes or aborts. */
+  /** Yields normalized host notifications until the upstream stream closes. */
   async *hostEvents(signal?: AbortSignal): AsyncGenerator<HarnessServerRequest> {
-    yield * this.websocketEvents('/api/events.host', signal)
+    yield * this.currentEventFrames(signal)
   }
 
   close(): void {
@@ -405,17 +469,18 @@ export class DeepSeekHarnessAdapter {
   }
 
   private async callRaw<T>(method: string, payload: unknown): Promise<HarnessRpcResult<T>> {
+    const upstream = this.resolveUpstreamRequest(method, payload)
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(new Error(`upstream RPC ${method} timed out`)), this.timeoutMs)
     try {
-      const response = await this.fetchImpl(`${this.baseUrl}/api/${method}`, {
+      const response = await this.fetchWithAuth(`${this.baseUrl}/api/${upstream.endpoint}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           type: 'client-request',
           rpcId: this.newId(),
-          method,
-          payload,
+          method: upstream.endpoint,
+          payload: { args: upstream.args },
         } satisfies HarnessClientRequest),
         signal: controller.signal,
       })
@@ -423,7 +488,7 @@ export class DeepSeekHarnessAdapter {
       if (!response.ok) {
         const body = await response.text().catch(() => '')
         throw new HarnessAdapterError(
-          `upstream HTTP ${response.status} for ${method}: ${body.slice(0, 200)}`,
+          `upstream HTTP ${response.status} for ${upstream.endpoint}: ${body.slice(0, 200)}`,
           'http',
           response.status,
         )
@@ -431,7 +496,7 @@ export class DeepSeekHarnessAdapter {
 
       const body = (await response.json()) as HarnessServerResponse<T>
       if (body.type !== 'server-response') {
-        throw new HarnessAdapterError(`unexpected upstream response for ${method}`, 'protocol')
+        throw new HarnessAdapterError(`unexpected upstream response for ${upstream.endpoint}`, 'protocol')
       }
       return body.result
     } finally {
@@ -440,38 +505,489 @@ export class DeepSeekHarnessAdapter {
   }
 
   private async respond(rpcId: string, value: unknown): Promise<{ accepted: boolean }> {
-    const controller = new AbortController()
-    const timer = setTimeout(() => {
-      controller.abort(new HarnessAdapterError('upstream /api/respond timed out', 'protocol'))
-    }, this.timeoutMs)
-    try {
-      const response = await this.fetchImpl(`${this.baseUrl}/api/respond`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          type: 'client-response',
-          rpcId,
-          result: { ok: true, value },
-        } satisfies HarnessClientResponse),
-        signal: controller.signal,
-      })
+    const pending = this.pendingRemoteEvents.get(rpcId)
+    if (pending === undefined) return { accepted: false }
 
-      if (!response.ok) {
-        throw new HarnessAdapterError(`upstream HTTP ${response.status} for /api/respond`, 'http', response.status)
+    const result = await this.callRaw<void>('$events/result', {
+      clientId: pending.clientId,
+      eventId: pending.eventId,
+      outcome: { kind: 'result', value },
+    })
+    if (!result.ok) {
+      throw new HarnessAdapterError(
+        `upstream RPC $events/result failed: ${result.error.message}`,
+        'rpc',
+      )
+    }
+    this.pendingRemoteEvents.delete(rpcId)
+    return { accepted: true }
+  }
+
+  private resolveUpstreamRequest(method: string, payload: unknown): { endpoint: string; args: Record<string, unknown> } {
+    const value = isRecord(payload) ? payload : {}
+    switch (method) {
+      case '$events/result':
+        return { endpoint: '$events/result', args: value }
+      case 'workspace.create':
+        return { endpoint: 'workspace/create', args: { request: value } }
+      case 'session.list':
+        return { endpoint: 'session/list', args: { _request: {} } }
+      case 'session.search':
+        return { endpoint: 'session/search', args: { request: value } }
+      case 'session.create':
+        return { endpoint: 'session/create', args: { request: value } }
+      case 'agentPreset.list':
+      case 'agent-preset.list':
+        return { endpoint: 'agentPresets/list', args: {} }
+      case 'agentPreset.select':
+      case 'agent-preset.select':
+        return {
+          endpoint: 'agentPresets/select',
+          args: {
+            agentId: typeof value.sessionId === 'string' ? value.sessionId : '',
+            agentPreset: typeof value.agentPreset === 'string' ? value.agentPreset : '',
+          },
+        }
+      case 'session.history': {
+        const sessionId = typeof value.sessionId === 'string' ? value.sessionId : ''
+        const throughSeq = typeof value.throughSeq === 'number' ? value.throughSeq : -1
+        return {
+          endpoint: 'session/page',
+          args: {
+            request: {
+              address: { kind: 'session', sessionId },
+              throughSeq,
+              ...(typeof value.beforeSeq === 'number' && { beforeSeq: value.beforeSeq }),
+              ...(typeof value.maxMessages === 'number' && { maxMessages: value.maxMessages }),
+            },
+          },
+        }
       }
+      case 'session.models':
+        return { endpoint: 'session/modelCatalog', args: {} }
+      case 'session.selectModel':
+      case 'session.select-model':
+        return { endpoint: 'session/selectModel', args: { request: value } }
+      case 'session.prompt':
+        return {
+          endpoint: 'session/prompt',
+          args: {
+            request: {
+              requestId: this.newId(),
+              sessionId: value.sessionId,
+              mode: value.mode,
+              content: value.content,
+              clientTimeZone: value.clientTimeZone,
+            },
+          },
+        }
+      default:
+        throw new HarnessAdapterError(`unsupported upstream RPC ${method}`, 'protocol')
+    }
+  }
 
-      const body = (await response.json()) as { accepted: boolean } | { accepted: false; reason: string }
-      return { accepted: body.accepted === true }
+  private async *normalizedEvents(signal: AbortSignal | undefined, includeControl: boolean): AsyncGenerator<HarnessServerRequest> {
+    type SourceName = 'events' | 'control' | 'session'
+    type SourceState = {
+      name: SourceName
+      iterator: AsyncGenerator<unknown>
+      next: Promise<IteratorResult<unknown>>
+    }
+
+    const states: SourceState[] = []
+    const followedSessionIds = new Set<string>()
+    const addSource = (name: SourceName, stream: AsyncGenerator<unknown>): void => {
+      const iterator = stream[Symbol.asyncIterator]()
+      states.push({ name, iterator, next: iterator.next() })
+    }
+    const addSession = (sessionId: unknown): void => {
+      if (typeof sessionId !== 'string' || sessionId === '' || followedSessionIds.has(sessionId)) return
+      followedSessionIds.add(sessionId)
+      addSource('session', this.currentSessionFrames(sessionId, signal))
+    }
+
+    addSource('events', this.currentEventFrames(signal))
+    if (includeControl) addSource('control', this.currentControlFrames(signal))
+
+    const listed = await this.call<{ items: Array<{ sessionId: string }> }>('session.list', {})
+    for (const item of listed.items) addSession(item.sessionId)
+
+    try {
+      while (states.length > 0) {
+        const { state, result } = await Promise.race(states.map(state => state.next.then(result => ({ state, result }))))
+        if (result.done) {
+          states.splice(states.indexOf(state), 1)
+          continue
+        }
+
+        state.next = state.iterator.next()
+        const value = result.value as HarnessServerRequest
+        if (value.method === 'session/added') {
+          const payload = isRecord(value.payload) ? value.payload : undefined
+          addSession(payload?.sessionId)
+        }
+        yield value
+      }
     } finally {
-      clearTimeout(timer)
+      await Promise.allSettled(states.map(state => state.iterator.return?.(undefined)))
+    }
+  }
+
+  private async *currentEventFrames(signal?: AbortSignal): AsyncGenerator<HarnessServerRequest> {
+    let clientId: string | undefined
+    try {
+      for await (const value of this.remoteStream('$events', {}, signal)) {
+        const frame = isRecord(value) ? value : undefined
+        if (frame === undefined || typeof frame.type !== 'string') continue
+        if (frame.type === 'ready') {
+          clientId = typeof frame.clientId === 'string' ? frame.clientId : undefined
+          continue
+        }
+
+        if (frame.type === 'emit') {
+          const event = typeof frame.event === 'string' ? frame.event : ''
+          const args = Array.isArray(frame.args) ? frame.args : []
+          const normalized = this.normalizeEmittedEvent(event, args)
+          if (normalized !== undefined) yield normalized
+          continue
+        }
+
+        if (frame.type === 'waterfall') {
+          const event = typeof frame.event === 'string' ? frame.event : ''
+          const eventId = typeof frame.eventId === 'string' ? frame.eventId : ''
+          const agentId = typeof frame.agentId === 'string' ? frame.agentId : undefined
+          const request = isRecord(frame.request) ? frame.request : {}
+          if (eventId === '' || clientId === undefined) continue
+          if (event === 'approval/request') {
+            this.pendingRemoteEvents.set(eventId, { clientId, eventId, kind: 'approval' })
+            yield {
+              type: 'server-request',
+              rpcId: eventId,
+              method: 'approval/requested',
+              payload: {
+                type: 'approval/requested',
+                ...(agentId !== undefined && { sessionId: agentId }),
+                rpcId: eventId,
+                approvalId: eventId,
+                ...(typeof request.toolName === 'string' && { toolName: request.toolName }),
+                ...(typeof request.callId === 'string' && { callId: request.callId }),
+                ...(typeof request.reason === 'string' && { reason: request.reason }),
+              },
+            }
+          } else if (event === 'user-questions/request') {
+            this.pendingRemoteEvents.set(eventId, { clientId, eventId, kind: 'question' })
+            yield {
+              type: 'server-request',
+              rpcId: eventId,
+              method: 'question/requested',
+              payload: {
+                type: 'question/requested',
+                ...(agentId !== undefined && { sessionId: agentId }),
+                rpcId: eventId,
+                questions: Array.isArray(request.questions) ? request.questions : [],
+              },
+            }
+          }
+          continue
+        }
+
+        if (frame.type === 'cancel') {
+          const eventId = typeof frame.eventId === 'string' ? frame.eventId : ''
+          const pending = this.pendingRemoteEvents.get(eventId)
+          if (pending === undefined) continue
+          this.pendingRemoteEvents.delete(eventId)
+          yield {
+            type: 'server-request',
+            rpcId: eventId,
+            method: pending.kind === 'approval' ? 'approval/resolved' : 'question/resolved',
+            payload: {
+              type: pending.kind === 'approval' ? 'approval/resolved' : 'question/resolved',
+              rpcId: eventId,
+              ...(pending.kind === 'approval' && { approvalId: eventId, outcome: 'cancelled' }),
+            },
+          }
+        }
+      }
+    } finally {
+      if (clientId !== undefined) {
+        for (const [rpcId, pending] of this.pendingRemoteEvents) {
+          if (pending.clientId === clientId) this.pendingRemoteEvents.delete(rpcId)
+        }
+      }
+    }
+  }
+
+  private normalizeEmittedEvent(event: string, args: unknown[]): HarnessServerRequest | undefined {
+    if (event === 'api-session/activity') {
+      return this.sessionNotification('session/activity', args[0], { updatedAt: args[1] })
+    }
+    if (event === 'api-session/status') {
+      return this.sessionNotification('session/status', args[0], { running: args[1] })
+    }
+    if (event === 'api-session/error') {
+      return this.sessionNotification('session/error', args[0], { message: args[1] })
+    }
+    if (event === 'api-session/removed') {
+      return this.sessionNotification('session/removed', args[0], {})
+    }
+    if (event === 'api-session/added') {
+      const summary = isRecord(args[0]) ? args[0] : {}
+      const sessionId = typeof summary.sessionId === 'string' ? summary.sessionId : undefined
+      return {
+        type: 'server-request',
+        rpcId: `event:${event}:${sessionId ?? this.newId()}`,
+        method: 'session/added',
+        payload: { type: 'session/added', ...summary },
+      }
+    }
+    if (event === 'agent-preset/selected') {
+      return this.sessionNotification('agent-preset/selected', args[0], { agentPreset: args[1] })
+    }
+    return {
+      type: 'server-request',
+      rpcId: `event:${event}:${this.newId()}`,
+      method: event,
+      payload: { type: event, args },
+    }
+  }
+
+  private sessionNotification(type: string, sessionIdValue: unknown, extra: Record<string, unknown>): HarnessServerRequest | undefined {
+    if (typeof sessionIdValue !== 'string' || sessionIdValue === '') return undefined
+    return {
+      type: 'server-request',
+      rpcId: `event:${type}:${sessionIdValue}:${this.newId()}`,
+      method: type,
+      payload: { type, sessionId: sessionIdValue, ...extra },
+    }
+  }
+
+  private async *currentControlFrames(signal?: AbortSignal): AsyncGenerator<HarnessServerRequest> {
+    for await (const value of this.remoteStream('session/control', {}, signal)) {
+      const frame = isRecord(value) ? value : undefined
+      if (frame === undefined || typeof frame.type !== 'string') continue
+      if (frame.type === 'baseline') {
+        const baselineValue = frame.value
+        const baseline = isRecord(baselineValue) ? baselineValue : undefined
+        const queueValue = baseline?.queues
+        const queues = isRecord(queueValue) ? queueValue : {}
+        for (const [sessionId, items] of Object.entries(queues)) {
+          yield this.queueNotification(sessionId, items)
+        }
+      } else if (frame.type === 'queue' && typeof frame.sessionId === 'string') {
+        yield this.queueNotification(frame.sessionId, frame.items)
+      }
+    }
+  }
+
+  private async *currentSessionFrames(sessionId: string, signal?: AbortSignal): AsyncGenerator<HarnessServerRequest> {
+    for await (const value of this.remoteStream('session/follow', {
+      request: {
+        address: { kind: 'session', sessionId },
+        maxMessages: 50,
+        assistantStream: true,
+      },
+    }, signal)) {
+      const frame = isRecord(value) ? value : undefined
+      if (frame === undefined || typeof frame.type !== 'string' || frame.type !== 'event') continue
+      const event = isRecord(frame.event) ? frame.event : undefined
+      if (event === undefined || typeof event.type !== 'string' || typeof event.seq !== 'number' || typeof event.time !== 'number') continue
+      yield {
+        type: 'server-request',
+        rpcId: `session-event:${sessionId}:${event.seq}`,
+        method: 'session/event',
+        payload: {
+          type: 'session/event',
+          sessionId,
+          event: {
+            type: event.type,
+            seq: event.seq,
+            time: event.time,
+            data: event.data,
+          },
+          ...(frame.view !== undefined && { view: frame.view }),
+        },
+      }
+    }
+  }
+
+  private queueNotification(sessionId: string, items: unknown): HarnessServerRequest {
+    return {
+      type: 'server-request',
+      rpcId: `queue:${sessionId}:${this.newId()}`,
+      method: 'session/queue',
+      payload: { type: 'session/queue', sessionId, items: Array.isArray(items) ? items : [] },
+    }
+  }
+
+  private async firstRemoteStreamValue(endpoint: string, args: Record<string, unknown>): Promise<unknown> {
+    for await (const value of this.remoteStream(endpoint, args)) return value
+    throw new HarnessAdapterError(`upstream stream ${endpoint} ended before its opening frame`, 'protocol')
+  }
+
+  private async *remoteStream(endpoint: string, payload: Record<string, unknown>, signal?: AbortSignal): AsyncGenerator<unknown> {
+    const url = new URL('/api/remote.mux', this.baseUrl)
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+
+    const cookie = await this.ensureAuthCookie()
+    const socket = new this.WebSocketImpl(
+      url.toString(),
+      cookie === undefined ? undefined : { headers: { cookie } },
+    )
+    this.sockets.add(socket)
+
+    const values: unknown[] = []
+    let wake: (() => void) | undefined
+    let opened = false
+    let ended = false
+    let closed = false
+    let failure: HarnessAdapterError | undefined
+    const streamId = this.newId()
+    let resolveOpen: (() => void) | undefined
+    let rejectOpen: ((error: HarnessAdapterError) => void) | undefined
+    let openSettled = false
+    const openPromise = new Promise<void>((resolve, reject) => {
+      resolveOpen = resolve
+      rejectOpen = reject
+    })
+    const openTimer = setTimeout(() => {
+      if (!openSettled) {
+        openSettled = true
+        rejectOpen?.(new HarnessAdapterError(`WebSocket /api/remote.mux open timed out`, 'protocol'))
+      }
+    }, this.timeoutMs)
+
+    const wakeReader = () => {
+      wake?.()
+      wake = undefined
+    }
+    socket.addEventListener('open', () => {
+      opened = true
+      try {
+        socket.send(JSON.stringify({ type: 'open', streamId, endpoint, payload: { args: payload } }))
+      } catch (cause) {
+        failure = new HarnessAdapterError(
+          `WebSocket /api/remote.mux failed to send its opening frame: ${String(cause)}`,
+          'protocol',
+        )
+        closed = true
+      }
+      if (!openSettled) {
+        openSettled = true
+        clearTimeout(openTimer)
+        if (failure === undefined) resolveOpen?.()
+        else rejectOpen?.(failure)
+      }
+      wakeReader()
+    })
+    socket.addEventListener('message', event => {
+      try {
+        const message = JSON.parse(String(event.data ?? '')) as Record<string, unknown>
+        if (message.streamId !== streamId) return
+        if (message.type === 'item') {
+          values.push(message.value)
+        } else if (message.type === 'end') {
+          ended = true
+          closed = true
+        } else if (message.type === 'error') {
+          const error = isRecord(message.error) ? message.error : {}
+          failure = new HarnessAdapterError(
+            typeof error.message === 'string' ? error.message : `upstream stream ${endpoint} failed`,
+            'rpc',
+          )
+          closed = true
+        }
+        wakeReader()
+      } catch {
+        failure = new HarnessAdapterError(`invalid upstream stream frame for ${endpoint}`, 'protocol')
+        closed = true
+        wakeReader()
+      }
+    })
+    socket.addEventListener('close', () => {
+      closed = true
+      if (!opened && !openSettled) {
+        openSettled = true
+        clearTimeout(openTimer)
+        rejectOpen?.(new HarnessAdapterError(`WebSocket /api/remote.mux failed to open`, 'protocol'))
+      }
+      wakeReader()
+    })
+    socket.addEventListener('error', () => {
+      if (!opened) {
+        failure = new HarnessAdapterError(`WebSocket /api/remote.mux failed to open`, 'protocol')
+        if (!openSettled) {
+          openSettled = true
+          clearTimeout(openTimer)
+          rejectOpen?.(failure)
+        }
+      }
+      closed = true
+      wakeReader()
+    })
+
+    const onAbort = () => {
+      if (opened && !ended) {
+        try {
+          socket.send(JSON.stringify({ type: 'cancel', streamId }))
+        } catch {
+          // The socket may already have closed; cleanup below is sufficient.
+        }
+      }
+      closed = true
+      if (!openSettled) {
+        openSettled = true
+        clearTimeout(openTimer)
+        rejectOpen?.(new HarnessAdapterError(`WebSocket /api/remote.mux aborted before opening`, 'protocol'))
+      }
+      socket.close()
+      wakeReader()
+    }
+    if (signal?.aborted) onAbort()
+    else signal?.addEventListener('abort', onAbort, { once: true })
+
+    try {
+      await openPromise
+
+      while (true) {
+        if (values.length > 0) {
+          yield values.shift()
+        } else if (failure !== undefined) {
+          throw failure
+        } else if (closed) {
+          if (!signal?.aborted && !ended) throw new HarnessAdapterError(`upstream stream ${endpoint} closed`, 'protocol')
+          return
+        } else {
+          await new Promise<void>(resolve => { wake = resolve })
+        }
+      }
+    } catch (cause) {
+      if (!signal?.aborted) throw cause
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
+      socket.close()
+      this.sockets.delete(socket)
     }
   }
 
   private async *websocketEvents(path: string, signal?: AbortSignal): AsyncGenerator<HarnessServerRequest> {
+    void path
+    yield * this.currentEventFrames(signal)
+  }
+
+  /*
+   * Kept as a compatibility shim for callers built against the previous
+   * adapter surface. New code uses `remoteStream` and the current Gateway
+   * mux protocol above.
+   */
+  private async *legacyWebsocketEvents(path: string, signal?: AbortSignal): AsyncGenerator<HarnessServerRequest> {
     const url = new URL(path, this.baseUrl)
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
 
-    const socket = new this.WebSocketImpl(url.toString())
+    const cookie = await this.ensureAuthCookie()
+    const socket = new this.WebSocketImpl(
+      url.toString(),
+      cookie === undefined ? undefined : { headers: { cookie } },
+    )
     this.sockets.add(socket)
 
     const messages: HarnessServerRequest[] = []
@@ -536,4 +1052,97 @@ export class DeepSeekHarnessAdapter {
       this.sockets.delete(socket)
     }
   }
+
+  private hasAuthSource(): boolean {
+    return this.authUrl !== undefined || this.authUrlFile !== undefined || this.authCookieFile !== undefined
+  }
+
+  private async fetchWithAuth(input: string, init: RequestInit): Promise<Response> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const cookie = await this.ensureAuthCookie()
+      const headers = new Headers(init.headers)
+      if (cookie !== undefined) headers.set('cookie', cookie)
+      const response = await this.fetchImpl(input, { ...init, headers })
+      if (response.status !== 401 || !this.hasAuthSource() || attempt === 1) return response
+      this.authCookie = undefined
+      await this.removeCachedCookie()
+    }
+    throw new Error('unreachable')
+  }
+
+  private async ensureAuthCookie(): Promise<string | undefined> {
+    if (this.authCookie !== undefined) return this.authCookie
+    if (this.authBootstrap !== undefined) {
+      await this.authBootstrap
+      return this.authCookie
+    }
+
+    this.authBootstrap = this.bootstrapAuth().finally(() => {
+      this.authBootstrap = undefined
+    })
+    await this.authBootstrap
+    return this.authCookie
+  }
+
+  private async bootstrapAuth(): Promise<void> {
+    if (this.authCookieFile !== undefined) {
+      try {
+        const cached = (await readFile(this.authCookieFile, 'utf8')).trim()
+        if (cached !== '') {
+          this.authCookie = cached.split(';', 1)[0]
+          return
+        }
+      } catch {
+        // The cache is optional; fall through to the launch URL exchange.
+      }
+    }
+
+    const authUrl = await this.resolveAuthUrl()
+    if (authUrl === undefined) return
+
+    const response = await this.fetchImpl(authUrl, {
+      method: 'GET',
+      redirect: 'manual',
+    })
+    const headers = response.headers as Headers & { getSetCookie?: () => string[] }
+    const setCookie = headers.getSetCookie?.()[0] ?? headers.get('set-cookie')
+    if (setCookie === null || setCookie === undefined || setCookie === '') {
+      throw new HarnessAdapterError(
+        `Harness browser authentication did not issue a session cookie (HTTP ${response.status})`,
+        'http',
+        response.status,
+      )
+    }
+
+    this.authCookie = setCookie.split(';', 1)[0]
+    if (this.authCookieFile !== undefined) {
+      await mkdir(dirname(this.authCookieFile), { recursive: true })
+      await writeFile(this.authCookieFile, `${this.authCookie}\n`, { mode: 0o600 })
+    }
+  }
+
+  private async resolveAuthUrl(): Promise<string | undefined> {
+    if (this.authUrl !== undefined && this.authUrl.trim() !== '') return this.authUrl.trim()
+    if (this.authUrlFile === undefined) return undefined
+
+    try {
+      const contents = await readFile(this.authUrlFile, 'utf8')
+      const line = contents.split(/\r?\n/u).map(value => value.trim()).find(value => value !== '')
+      if (line === undefined) return undefined
+      const match = /^dsh web:\s+(\S+)$/u.exec(line)
+      return match?.[1] ?? line
+    } catch {
+      return undefined
+    }
+  }
+
+  private async removeCachedCookie(): Promise<void> {
+    if (this.authCookieFile !== undefined) {
+      await rm(this.authCookieFile, { force: true }).catch(() => undefined)
+    }
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
