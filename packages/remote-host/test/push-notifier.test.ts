@@ -1,6 +1,10 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { RemotePrincipal } from '@dsh-remote/protocol'
 import {
+  loadOrCreateVapidDetails,
   PushNotifier,
   pushNoticeFor,
   type PushPayload,
@@ -24,6 +28,23 @@ const subscription: PushSubscriptionInput = {
 }
 
 describe('PushNotifier', () => {
+  it('creates and persists VAPID details when no key file exists', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-vapid-test-'))
+    const filePath = join(directory, 'vapid.json')
+
+    try {
+      const details = await loadOrCreateVapidDetails(filePath, 'mailto:test@example.invalid')
+      const saved = JSON.parse(await readFile(filePath, 'utf8')) as typeof details
+
+      expect(details.subject).toBe('mailto:test@example.invalid')
+      expect(details.publicKey).toMatch(/^[A-Za-z0-9_-]+$/)
+      expect(details.privateKey).toMatch(/^[A-Za-z0-9_-]+$/)
+      expect(saved).toEqual(details)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it('registers one subscription per endpoint and sends payloads', async () => {
     const sent: PushPayload[] = []
     const notifier = new PushNotifier({

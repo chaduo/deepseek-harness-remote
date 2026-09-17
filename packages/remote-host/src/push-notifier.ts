@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { HarnessServerRequest } from '@dsh-remote/adapter-deepseek'
 import type { RemotePrincipal } from '@dsh-remote/protocol'
-import * as webpush from 'web-push'
+import webpush from 'web-push'
 import type { PushSubscription as WebPushSubscription, RequestOptions, VapidKeys } from 'web-push'
 
 const PUSH_TTL_SECONDS = 5 * 60
