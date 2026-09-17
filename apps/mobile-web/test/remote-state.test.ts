@@ -7,6 +7,7 @@ import {
   withResolvedApproval,
   withoutPendingApproval,
 } from '../src/remote-state.js'
+import { displayHostName, sortTaskChats } from '../src/task-page-model.js'
 import type { ApprovalRequest, QuestionRequest } from '@dsh-remote/domain'
 
 const approval: ApprovalRequest = {
@@ -17,6 +18,18 @@ const approval: ApprovalRequest = {
 }
 
 describe('mobile remote state', () => {
+  it('formats the task-home host label and sorts chats without mutating input', () => {
+    expect(displayHostName('localhost')).toBe('远程 Mac')
+    expect(displayHostName('zhaozhuomacbook-pro-2.tailnet.ts.net')).toBe('zhaozhuomacbook-pro-2.local')
+
+    const chats = [
+      { sessionId: 'older', updatedAt: 2 },
+      { sessionId: 'newer', updatedAt: 5 },
+    ]
+    expect(sortTaskChats(chats).map(chat => chat.sessionId)).toEqual(['newer', 'older'])
+    expect(chats.map(chat => chat.sessionId)).toEqual(['older', 'newer'])
+  })
+
   it('clears an acknowledged approval and records its visible outcome immediately', () => {
     expect(withoutPendingApproval([approval], approval.approvalId)).toEqual([])
     expect(withResolvedApproval([], approval, 'allowed-once', undefined, '2026-08-22T00:00:00.000Z'))

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { buildReviewTimeline, groupSessionsByWorkspace } from '@dsh-remote/domain'
+import { buildReviewTimeline } from '@dsh-remote/domain'
 import type {
   ModelSelection,
   CheckDefinitionSummary,
@@ -22,26 +22,13 @@ import { questionAnswersForSubmit, questionAnswersReady } from './remote-state.j
 import { useRemote } from './use-remote.js'
 import type { CreateWorkspaceResult, PushState } from './use-remote.js'
 import { DraftStore } from './draft-store.js'
+import { displayHostName, sortTaskChats } from './task-page-model.js'
 
 type Tab = 'hosts' | 'tasks' | 'approval' | 'new'
 
 interface WorkspaceFormError {
   hint: string
   reason?: string
-}
-
-const COLLAPSED_WORKSPACES_STORAGE_KEY = 'dsh-remote:collapsed-workspaces'
-const UNGROUPED_WORKSPACE_KEY = '__ungrouped__'
-
-function storedCollapsedWorkspaces(): Set<string> {
-  try {
-    const raw = window.localStorage.getItem(COLLAPSED_WORKSPACES_STORAGE_KEY)
-    if (raw === null) return new Set()
-    const value = JSON.parse(raw) as unknown
-    return new Set(Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [])
-  } catch {
-    return new Set()
-  }
 }
 
 type IconName =
@@ -54,6 +41,10 @@ type IconName =
   | 'send'
   | 'alert'
   | 'laptop'
+  | 'menu'
+  | 'more'
+  | 'folder'
+  | 'edit'
   | 'chevron-left'
   | 'chevron-right'
   | 'chevron-down'
@@ -69,6 +60,10 @@ const ICONS: Record<IconName, ReactNode> = {
   send: <><path d="M12 19.5V5" /><path d="m5.5 11.5 6.5-6.5 6.5 6.5" /></>,
   alert: <><circle cx="12" cy="12" r="9" /><path d="M12 7.5v5.5" /><path d="M12 16.4h.01" /></>,
   laptop: <><rect x="3.5" y="5" width="17" height="11.5" rx="2" /><path d="M2 19.5h20" /></>,
+  menu: <><path d="M5 7h14" /><path d="M5 12h14" /><path d="M5 17h14" /></>,
+  more: <><circle cx="5" cy="12" r="1.2" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" /><circle cx="19" cy="12" r="1.2" fill="currentColor" stroke="none" /></>,
+  folder: <><path d="M3.5 6.5h6l2 2h9v9.5a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2v-9.5a2 2 0 0 1 2-2Z" /></>,
+  edit: <><path d="m14.5 5.5 4 4" /><path d="m4 20 4.5-1 9.7-9.7a2.1 2.1 0 0 0-3-3L5.5 16z" /></>,
   'chevron-left': <path d="m15 5-7 7 7 7" />,
   'chevron-right': <path d="m9 5 7 7-7 7" />,
   'chevron-down': <path d="m5 9 7 7 7-7" />,
@@ -96,6 +91,7 @@ export default function App() {
   const draftStore = useMemo(() => new DraftStore(), [])
   const [, setDraftRevision] = useState(0)
   const [tab, setTab] = useState<Tab>('tasks')
+  const [taskMenuOpen, setTaskMenuOpen] = useState(false)
   const attentionCount = remote.pendingApprovals.length + remote.pendingQuestions.length
   const selectedSession = remote.sessions.find(session => session.sessionId === remote.selectedSessionId) ?? null
   const promptText = remote.selectedSessionId === null ? '' : draftStore.get(remote.selectedSessionId)
@@ -143,13 +139,22 @@ export default function App() {
   // holds no Harness of its own, so the disconnected state replaces the body
   // and the tab bar rather than leaving dead controls behind.
   const disconnected = remote.connection === 'offline' || remote.retrying
+  const taskHome = !disconnected && tab === 'tasks' && selectedSession === null
   // A transport error while the link itself is down repeats what the status
   // line already says, in rawer words; keep the banner for real RPC failures.
   const noticeError = remote.connection === 'open' ? remote.error : null
 
   return (
     <div className="app">
-      <header className="topbar">
+      <header className={taskHome ? 'topbar task-home-topbar' : 'topbar'}>
+        {taskHome ? (
+          <TaskHomeHeader
+            connection={remote.connection}
+            hostLabel={displayHostName(window.location.hostname)}
+            onToggleMenu={() => setTaskMenuOpen(previous => !previous)}
+          />
+        ) : (
+          <>
         <div className="topbar-copy">
           <div className="eyebrow">DSH Remote</div>
           <h1>{disconnected ? 'Mac 已离线' : pageTitle(tab, selectedSession)}</h1>
@@ -165,7 +170,25 @@ export default function App() {
             </button>
           )}
         </div>
+          </>
+        )}
       </header>
+
+      {taskHome && taskMenuOpen && (
+        <TaskNavigationMenu
+          activeTab={tab}
+          attentionCount={attentionCount}
+          onSelect={nextTab => {
+            setTab(nextTab)
+            setTaskMenuOpen(false)
+            if (nextTab === 'tasks') remote.selectSession(null)
+          }}
+          onRefresh={() => {
+            setTaskMenuOpen(false)
+            void remote.refreshAll()
+          }}
+        />
+      )}
 
       {!disconnected && (noticeError !== null || remote.gapNotice || remote.connection === 'reconnecting') && (
         <div
@@ -181,7 +204,7 @@ export default function App() {
         </div>
       )}
 
-      <main className={disconnected ? 'offline' : undefined}>
+      <main className={disconnected ? 'offline' : taskHome ? 'task-home-main' : undefined}>
         {disconnected && (
           <OfflineView
             lastConnectedAt={remote.lastConnectedAt}
@@ -221,8 +244,14 @@ export default function App() {
             setPromptText={setPromptText}
             draftVersion={draftVersion}
             clearDraftIfVersion={clearDraftIfVersion}
-            onSelect={remote.selectSession}
-            onNew={() => setTab('new')}
+            onSelect={sessionId => {
+              setTaskMenuOpen(false)
+              remote.selectSession(sessionId)
+            }}
+            onNew={() => {
+              setTaskMenuOpen(false)
+              setTab('new')
+            }}
             onOpenApproval={() => setTab('approval')}
             onSend={remote.sendPrompt}
             sessionModels={remote.sessionModels}
@@ -269,7 +298,7 @@ export default function App() {
         )}
       </main>
 
-      {!disconnected && (
+      {!disconnected && !taskHome && (
       <nav className="tabs" aria-label="主要导航">
         <TabButton
           icon="tasks"
@@ -284,7 +313,7 @@ export default function App() {
         <TabButton icon="laptop" label="Mac" active={tab === 'hosts'} onClick={() => setTab('hosts')} />
       </nav>
       )}
-      {!disconnected && tab !== 'new' && !(tab === 'tasks' && selectedSession !== null) && (
+      {!disconnected && !taskHome && tab !== 'new' && !(tab === 'tasks' && selectedSession !== null) && (
         <button className="new-task-fab" aria-label="新建任务" onClick={() => setTab('new')}>
           <Icon name="plus" />
           <span>新任务</span>
@@ -309,6 +338,61 @@ function pageTitle(tab: Tab, selected: SessionSummary | null): string {
   if (tab === 'approval') return '等待处理'
   if (tab === 'new') return '新任务'
   return selected?.title ?? '任务'
+}
+
+function TaskHomeHeader(props: {
+  connection: ReturnType<typeof useRemote>['connection']
+  hostLabel: string
+  onToggleMenu: () => void
+}) {
+  return (
+    <div className="task-home-header">
+      <button className="task-home-circle" aria-label="打开导航" onClick={props.onToggleMenu}>
+        <Icon name="menu" />
+      </button>
+      <div className="task-home-header-copy">
+        <h1>远程</h1>
+        <div className="task-home-host">
+          <span className={'connection-dot ' + props.connection} aria-hidden="true" />
+          <Icon name="laptop" />
+          <span>{props.hostLabel}</span>
+        </div>
+      </div>
+      <button className="task-home-circle" aria-label="更多操作" onClick={props.onToggleMenu}>
+        <Icon name="more" />
+      </button>
+    </div>
+  )
+}
+
+function TaskNavigationMenu(props: {
+  activeTab: Tab
+  attentionCount: number
+  onSelect: (tab: 'tasks' | 'approval' | 'hosts') => void
+  onRefresh: () => void
+}) {
+  return (
+    <div className="task-navigation-menu" role="dialog" aria-label="导航">
+      <button className={'task-navigation-item' + (props.activeTab === 'tasks' ? ' active' : '')} onClick={() => props.onSelect('tasks')}>
+        <Icon name="tasks" />
+        <span>任务</span>
+      </button>
+      <button className={'task-navigation-item' + (props.activeTab === 'approval' ? ' active' : '')} onClick={() => props.onSelect('approval')}>
+        <Icon name="check" />
+        <span>待办</span>
+        {props.attentionCount > 0 && <span className="task-navigation-badge">{props.attentionCount}</span>}
+      </button>
+      <button className={'task-navigation-item' + (props.activeTab === 'hosts' ? ' active' : '')} onClick={() => props.onSelect('hosts')}>
+        <Icon name="laptop" />
+        <span>Mac</span>
+      </button>
+      <div className="task-navigation-divider" />
+      <button className="task-navigation-item" onClick={props.onRefresh}>
+        <Icon name="refresh" />
+        <span>刷新</span>
+      </button>
+    </div>
+  )
 }
 
 function clientActionId(prefix: string): string {
@@ -481,11 +565,7 @@ function TasksView(props: {
 }) {
   const selected = props.sessions.find(session => session.sessionId === props.selectedSessionId) ?? null
   const [searchText, setSearchText] = useState('')
-  const [collapsedWorkspaces, setCollapsedWorkspaces] = useState(storedCollapsedWorkspaces)
-  const groups = useMemo(
-    () => groupSessionsByWorkspace(props.sessions, props.workspaces),
-    [props.sessions, props.workspaces],
-  )
+  const chats = useMemo(() => sortTaskChats(props.sessions), [props.sessions])
   const attentionBySession = useMemo(() => {
     const counts = new Map<string, number>()
     for (const request of props.pendingApprovals) counts.set(request.sessionId, (counts.get(request.sessionId) ?? 0) + 1)
@@ -497,20 +577,6 @@ function TasksView(props: {
     const timer = window.setTimeout(() => props.onSearch(searchText), 250)
     return () => window.clearTimeout(timer)
   }, [searchText, props.onSearch])
-
-  const toggleWorkspace = (workspaceKey: string) => {
-    setCollapsedWorkspaces(previous => {
-      const next = new Set(previous)
-      if (next.has(workspaceKey)) next.delete(workspaceKey)
-      else next.add(workspaceKey)
-      try {
-        window.localStorage.setItem(COLLAPSED_WORKSPACES_STORAGE_KEY, JSON.stringify([...next]))
-      } catch {
-        // Keep folding functional when storage is unavailable (for example, private browsing restrictions).
-      }
-      return next
-    })
-  }
 
   if (selected !== null) {
     return (
@@ -548,102 +614,88 @@ function TasksView(props: {
   }
 
   return (
-    <section className="page-section">
-      <div className="section-heading row">
-        <div>
-          <div className="eyebrow">最近活动</div>
-          <h2>任务</h2>
-        </div>
-      </div>
-
-      <div className="search-field">
-        <Icon name="search" />
-        <input
-          className="search"
-          value={searchText}
-          onChange={event => setSearchText(event.target.value)}
-          placeholder="搜索任务或目录"
-          aria-label="搜索任务"
-        />
-      </div>
-
-      {searchText.trim() !== '' && (
-        <div className="search-results">
-          {props.searchResults.length === 0 && <div className="muted">无结果</div>}
-          {props.searchResults.map(result => (
-            <button
-              className="session-row"
-              key={result.sessionId}
-              onClick={() => {
-                setSearchText('')
-                props.onSelect(result.sessionId)
-              }}
-            >
-              <span className="session-title">{sessionTitle(props.sessions, result.sessionId)}</span>
-              <span className="muted">{result.snippet}</span>
-            </button>
-          ))}
-        </div>
-      )}
-
-      {groups.map((group, index) => {
-        const workspaceKey = group.workspaceId ?? UNGROUPED_WORKSPACE_KEY
-        const collapsed = collapsedWorkspaces.has(workspaceKey)
-        const sessionListId = `workspace-sessions-${index}`
-        return (
-          <div className={`group${collapsed ? ' collapsed' : ''}`} key={workspaceKey}>
-            <button
-              className="group-heading"
-              type="button"
-              aria-expanded={!collapsed}
-              aria-controls={sessionListId}
-              onClick={() => toggleWorkspace(workspaceKey)}
-            >
-              <span className="group-heading-title">
-                <span className="workspace-disclosure" aria-hidden="true"><Icon name="chevron-down" /></span>
-                <span className="workspace-heading-copy">
-                  <span>{group.title}</span>
-                  {group.path !== undefined && <span>{group.path}</span>}
-                </span>
-              </span>
-              <span className="workspace-task-count">{group.sessions.length} 个任务</span>
-            </button>
-            {!collapsed && (
-              <div id={sessionListId}>
-                {group.sessions.map(session => (
-                  <button
-                    className="session-row task-row"
-                    key={session.sessionId}
-                    onClick={() => props.onSelect(session.sessionId)}
-                  >
-                    <span className="task-row-main">
-                      <span className={`task-state-dot${session.running ? ' running' : ''}`} aria-hidden="true" />
-                      <span className="session-title">{session.title ?? '未命名任务'}</span>
-                      {(attentionBySession.get(session.sessionId) ?? 0) > 0 && (
-                        <span className="attention-badge">需处理 {attentionBySession.get(session.sessionId)}</span>
-                      )}
-                      <span className="chevron" aria-hidden="true"><Icon name="chevron-right" /></span>
-                    </span>
-                    <span className="task-row-meta">
-                      <span>{session.running ? '运行中' : session.blank ? '尚未开始' : '已暂停'}</span>
-                      <span>·</span>
-                      <span>{relativeTime(session.updatedAt)}</span>
-                    </span>
-                  </button>
-                ))}
+    <section className="page-section task-home-page">
+      <section className="task-home-section" aria-labelledby="task-home-projects">
+        <h2 id="task-home-projects">项目</h2>
+        <div className="task-home-project-list">
+          {props.workspaces.map(workspace => (
+            <div className="task-home-project-row" key={workspace.workspaceId}>
+              <div className="task-home-project-copy">
+                <Icon name="folder" />
+                <span>{workspace.title}</span>
               </div>
-            )}
-          </div>
-        )
-      })}
-      {props.sessions.length === 0 && props.workspaces.length === 0 && (
-        <div className="empty-state">
-          <strong>还没有任务</strong>
-          <span>先添加一个工作区，再从手机发起第一项工作。</span>
-          <button onClick={props.onNew}>创建任务</button>
+              <button
+                className="task-home-row-action"
+                aria-label={'在 ' + workspace.title + ' 中新建聊天'}
+                onClick={() => props.onNew()}
+              >
+                <Icon name="edit" />
+              </button>
+            </div>
+          ))}
+          {props.workspaces.length === 0 && (
+            <div className="task-home-empty-projects">还没有项目，可以在 Mac 页面添加工作区。</div>
+          )}
         </div>
-      )}
+      </section>
+
+      <section className="task-home-section task-home-chats" aria-labelledby="task-home-chats">
+        <div className="task-home-section-heading">
+          <h2 id="task-home-chats">聊天</h2>
+          <button className="task-home-heading-action" aria-label="新建聊天" onClick={props.onNew}>
+            <Icon name="edit" />
+          </button>
+        </div>
+        {searchText.trim() !== '' ? (
+          <div className="task-home-search-results">
+            {props.searchResults.length === 0 && <div className="task-home-empty-chats">没有找到匹配的聊天</div>}
+            {props.searchResults.map(result => (
+              <button
+                className="task-home-chat-row"
+                key={result.sessionId}
+                onClick={() => {
+                  setSearchText('')
+                  props.onSelect(result.sessionId)
+                }}
+              >
+                <span>{sessionTitle(props.sessions, result.sessionId)}</span>
+                <small>{result.snippet}</small>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="task-home-chat-list">
+            {chats.map(session => (
+              <button className="task-home-chat-row" key={session.sessionId} onClick={() => props.onSelect(session.sessionId)}>
+                <span>{session.title ?? '未命名聊天'}</span>
+                {(attentionBySession.get(session.sessionId) ?? 0) > 0 && (
+                  <small className="task-home-attention">需处理 {attentionBySession.get(session.sessionId)}</small>
+                )}
+              </button>
+            ))}
+            {chats.length === 0 && <div className="task-home-empty-chats">还没有聊天，点击下方“聊天”开始。</div>}
+          </div>
+        )}
+      </section>
+
       <WorkspaceForm onCreateWorkspace={props.onCreateWorkspace} />
+
+      <div className="task-home-toolbar">
+        <div className="search-field task-home-search">
+          <Icon name="search" />
+          <input
+            className="search task-home-search-input"
+            value={searchText}
+            onChange={event => setSearchText(event.target.value)}
+            placeholder="搜索聊天"
+            aria-label="搜索聊天"
+          />
+        </div>
+        <button className="task-home-chat-button" onClick={props.onNew}>
+          <Icon name="edit" />
+          <span>聊天</span>
+        </button>
+      </div>
     </section>
   )
 }
