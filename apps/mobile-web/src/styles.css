@@ -575,6 +575,10 @@ main {
   display: grid;
 }
 
+.task-home-project {
+  display: grid;
+}
+
 .task-home-project-row {
   display: flex;
   align-items: center;
@@ -584,9 +588,46 @@ main {
   padding: 6px 0;
 }
 
+.task-home-project-toggle {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: 4px;
+  min-width: 0;
+  min-height: 52px;
+  padding: 6px 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--label);
+  text-align: left;
+}
+
+.task-home-project-toggle:active:not(:disabled) {
+  background: var(--hover);
+}
+
+.task-home-project-chevron {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: var(--label-3);
+  transition: transform var(--dur) var(--ease);
+}
+
+.task-home-project-chevron.expanded {
+  transform: rotate(180deg);
+}
+
+.task-home-project-chevron svg {
+  width: 18px;
+  height: 18px;
+}
+
 .task-home-project-copy {
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
   gap: 15px;
   min-width: 0;
 }
@@ -607,6 +648,25 @@ main {
   font-size: 1.075rem;
   font-weight: 600;
   line-height: 26px;
+}
+
+.task-home-project-chat-list {
+  display: grid;
+  margin: -2px 0 9px 47px;
+  padding-left: 14px;
+  border-left: 1px solid var(--line-2);
+}
+
+.task-home-project-chat-list .task-home-chat-row {
+  min-height: 48px;
+  font-size: 0.9375rem;
+}
+
+.task-home-project-empty {
+  padding: 4px 0 9px;
+  color: var(--label-3);
+  font-size: 0.8125rem;
+  line-height: 20px;
 }
 
 .task-home-chat-row {

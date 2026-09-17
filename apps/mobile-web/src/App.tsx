@@ -22,7 +22,12 @@ import { questionAnswersForSubmit, questionAnswersReady } from './remote-state.j
 import { useRemote } from './use-remote.js'
 import type { CreateWorkspaceResult, PushState } from './use-remote.js'
 import { DraftStore } from './draft-store.js'
-import { displayHostName, sortTaskChats } from './task-page-model.js'
+import {
+  displayHostName,
+  sortTaskChats,
+  taskChatsForProject,
+  toggleTaskProject,
+} from './task-page-model.js'
 
 type Tab = 'hosts' | 'tasks' | 'approval' | 'new'
 
@@ -568,6 +573,7 @@ function TasksView(props: {
 }) {
   const selected = props.sessions.find(session => session.sessionId === props.selectedSessionId) ?? null
   const [searchText, setSearchText] = useState('')
+  const [expandedProjects, setExpandedProjects] = useState<string[]>([])
   const chats = useMemo(() => sortTaskChats(props.sessions), [props.sessions])
   const attentionBySession = useMemo(() => {
     const counts = new Map<string, number>()
@@ -580,6 +586,10 @@ function TasksView(props: {
     const timer = window.setTimeout(() => props.onSearch(searchText), 250)
     return () => window.clearTimeout(timer)
   }, [searchText, props.onSearch])
+
+  const toggleProject = (workspaceId: string) => {
+    setExpandedProjects(previous => toggleTaskProject(previous, workspaceId))
+  }
 
   if (selected !== null) {
     return (
@@ -621,12 +631,26 @@ function TasksView(props: {
       <section className="task-home-section" aria-labelledby="task-home-projects">
         <h2 id="task-home-projects">项目</h2>
         <div className="task-home-project-list">
-          {props.workspaces.map(workspace => (
-            <div className="task-home-project-row" key={workspace.workspaceId}>
-              <div className="task-home-project-copy">
-                <Icon name="folder" />
-                <span>{workspace.title}</span>
-              </div>
+          {props.workspaces.map(workspace => {
+            const expanded = expandedProjects.includes(workspace.workspaceId)
+            const projectChats = taskChatsForProject(chats, workspace.workspaceId)
+            return (
+            <div className="task-home-project" key={workspace.workspaceId}>
+              <div className="task-home-project-row">
+              <button
+                className="task-home-project-toggle"
+                aria-expanded={expanded}
+                aria-controls={'project-chats-' + workspace.workspaceId}
+                onClick={() => toggleProject(workspace.workspaceId)}
+              >
+                <span className={'task-home-project-chevron' + (expanded ? ' expanded' : '')} aria-hidden="true">
+                  <Icon name="chevron-down" />
+                </span>
+                <span className="task-home-project-copy">
+                  <Icon name="folder" />
+                  <span>{workspace.title}</span>
+                </span>
+              </button>
               <button
                 className="task-home-row-action"
                 aria-label={'在 ' + workspace.title + ' 中新建聊天'}
@@ -634,8 +658,27 @@ function TasksView(props: {
               >
                 <Icon name="edit" />
               </button>
+              </div>
+              {expanded && (
+                <div className="task-home-project-chat-list" id={'project-chats-' + workspace.workspaceId}>
+                  {projectChats.length === 0 && <div className="task-home-project-empty">此项目还没有聊天</div>}
+                  {projectChats.map(session => (
+                    <button
+                      className="task-home-chat-row"
+                      key={session.sessionId}
+                      onClick={() => props.onSelect(session.sessionId)}
+                    >
+                      <span>{session.title ?? '未命名聊天'}</span>
+                      {(attentionBySession.get(session.sessionId) ?? 0) > 0 && (
+                        <small className="task-home-attention">需处理 {attentionBySession.get(session.sessionId)}</small>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          ))}
+            )
+          })}
           {props.workspaces.length === 0 && (
             <div className="task-home-empty-projects">还没有项目，可以在 Mac 页面添加工作区。</div>
           )}

@@ -7,7 +7,12 @@ import {
   withResolvedApproval,
   withoutPendingApproval,
 } from '../src/remote-state.js'
-import { displayHostName, sortTaskChats } from '../src/task-page-model.js'
+import {
+  displayHostName,
+  sortTaskChats,
+  taskChatsForProject,
+  toggleTaskProject,
+} from '../src/task-page-model.js'
 import type { ApprovalRequest, QuestionRequest } from '@dsh-remote/domain'
 
 const approval: ApprovalRequest = {
@@ -28,6 +33,19 @@ describe('mobile remote state', () => {
     ]
     expect(sortTaskChats(chats).map(chat => chat.sessionId)).toEqual(['newer', 'older'])
     expect(chats.map(chat => chat.sessionId)).toEqual(['older', 'newer'])
+  })
+
+  it('toggles a project and filters its chats by workspace', () => {
+    expect(toggleTaskProject([], 'workspace-a')).toEqual(['workspace-a'])
+    expect(toggleTaskProject(['workspace-a'], 'workspace-a')).toEqual([])
+    expect(toggleTaskProject(['workspace-a'], 'workspace-b')).toEqual(['workspace-a', 'workspace-b'])
+
+    const chats = [
+      { sessionId: 'a-1', workspaceId: 'workspace-a', updatedAt: 2 },
+      { sessionId: 'b-1', workspaceId: 'workspace-b', updatedAt: 3 },
+      { sessionId: 'a-2', workspaceId: 'workspace-a', updatedAt: 5 },
+    ]
+    expect(taskChatsForProject(chats, 'workspace-a').map(chat => chat.sessionId)).toEqual(['a-2', 'a-1'])
   })
 
   it('clears an acknowledged approval and records its visible outcome immediately', () => {
