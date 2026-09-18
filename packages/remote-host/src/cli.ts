@@ -104,7 +104,7 @@ const previewProxy = previewsFile === undefined
       definitions: await loadPreviewDefinitions(previewsFile),
       secret: nonEmpty(process.env.DSH_REMOTE_PREVIEW_SECRET) ?? randomBytes(32),
     })
-const vapidSubject = nonEmpty(process.env.DSH_REMOTE_VAPID_SUBJECT) ?? 'mailto:dsh-remote@example.invalid'
+const vapidSubject = nonEmpty(process.env.DSH_REMOTE_VAPID_SUBJECT) ?? 'mailto:dsh-remote@example.com'
 const vapidPublicKey = nonEmpty(process.env.DSH_REMOTE_VAPID_PUBLIC_KEY)
 const vapidPrivateKey = nonEmpty(process.env.DSH_REMOTE_VAPID_PRIVATE_KEY)
 if ((vapidPublicKey === undefined) !== (vapidPrivateKey === undefined)) {

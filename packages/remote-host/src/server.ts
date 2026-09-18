@@ -693,7 +693,12 @@ export class RemoteHostServer {
   private async notifyPush(payload: Parameters<PushNotifier['notify']>[0]): Promise<void> {
     if (this.pushNotifier === undefined) return
     try {
-      await this.pushNotifier.notify(payload)
+      const result = await this.pushNotifier.notify(payload)
+      if (result.failed > 0) {
+        this.logger.warn({ type: payload.type, ...result }, 'push notification partially failed')
+      } else {
+        this.logger.info({ type: payload.type, ...result }, 'push notification dispatched')
+      }
     } catch (error) {
       this.logger.warn({ error: String(error), type: payload.type }, 'push notification failed')
     }

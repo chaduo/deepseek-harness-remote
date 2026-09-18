@@ -211,7 +211,7 @@ tailscale serve status
 | `DSH_REMOTE_CHECKS_FILE` | 空 | 允许手机触发的检查命令 JSON 文件 |
 | `DSH_REMOTE_PREVIEWS_FILE` | 空 | 允许手机打开的本机 Web 预览 JSON 文件 |
 | `DSH_REMOTE_PREVIEW_SECRET` | 每次启动随机生成 | 预览短期访问令牌的签名密钥；自定义值至少 16 字节 |
-| `DSH_REMOTE_VAPID_SUBJECT` | `mailto:dsh-remote@example.invalid` | Web Push 的 VAPID subject |
+| `DSH_REMOTE_VAPID_SUBJECT` | `mailto:dsh-remote@example.com` | Web Push 的 VAPID subject；也可以改成自己的 `mailto:` 地址或 HTTPS URL |
 | `DSH_REMOTE_VAPID_PUBLIC_KEY` / `DSH_REMOTE_VAPID_PRIVATE_KEY` | 自动生成并保存 | Web Push 密钥；也可以通过 `DSH_REMOTE_VAPID_KEYS_FILE` 指定密钥文件 |
 | `DSH_REMOTE_VAPID_KEYS_FILE` | `<state-file>.vapid.json` | 自动生成的 VAPID 密钥文件 |
 | `DSH_REMOTE_PUSH_SUBSCRIPTIONS_FILE` | `<state-file>.push.json` | 手机 Push 订阅持久化文件 |

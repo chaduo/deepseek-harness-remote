@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -39,6 +39,28 @@ describe('PushNotifier', () => {
       expect(details.subject).toBe('mailto:test@example.invalid')
       expect(details.publicKey).toMatch(/^[A-Za-z0-9_-]+$/)
       expect(details.privateKey).toMatch(/^[A-Za-z0-9_-]+$/)
+      expect(saved).toEqual(details)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('migrates an existing VAPID subject without rotating its keys', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-vapid-migration-test-'))
+    const filePath = join(directory, 'vapid.json')
+    const original = {
+      subject: 'mailto:dsh-remote@example.invalid',
+      publicKey: 'existing-public-key',
+      privateKey: 'existing-private-key',
+    }
+
+    try {
+      await writeFile(filePath, JSON.stringify(original), 'utf8')
+
+      const details = await loadOrCreateVapidDetails(filePath, 'mailto:dsh-remote@example.com')
+      const saved = JSON.parse(await readFile(filePath, 'utf8')) as typeof details
+
+      expect(details).toEqual({ ...original, subject: 'mailto:dsh-remote@example.com' })
       expect(saved).toEqual(details)
     } finally {
       await rm(directory, { recursive: true, force: true })
@@ -95,8 +117,32 @@ describe('PushNotifier', () => {
       tag: 'question:question_1',
     })
 
-    expect(result).toEqual({ sent: 0, removed: 1 })
+    expect(result).toEqual({ sent: 0, removed: 1, failed: 0 })
     expect(notifier.list(principal)).toEqual([])
+  })
+
+  it('reports non-terminal push failures without deleting the subscription', async () => {
+    const notifier = new PushNotifier({
+      vapid: {
+        subject: 'mailto:test@example.invalid',
+        publicKey: 'public-vapid-key',
+        privateKey: 'private-vapid-key',
+      },
+      send: async () => { throw Object.assign(new Error('bad jwt'), { statusCode: 403 }) },
+      newId: () => 'push_1',
+    })
+    await notifier.subscribe(principal, subscription)
+
+    const result = await notifier.notify({
+      type: 'session',
+      title: '任务已完成',
+      body: '打开任务查看 Agent 结果',
+      url: '/?session=session_1',
+      tag: 'session:session_1:finished',
+    })
+
+    expect(result).toEqual({ sent: 0, removed: 0, failed: 1 })
+    expect(notifier.list(principal)).toHaveLength(1)
   })
 
   it('turns upstream attention events into deep-linked notices', () => {
@@ -125,5 +171,23 @@ describe('PushNotifier', () => {
       method: 'session/event',
       payload: { type: 'session/event', sessionId: 'session_3', event: { type: 'session/completed' } },
     })).toEqual(expect.objectContaining({ type: 'session', url: '/?session=session_3' }))
+    expect(pushNoticeFor({
+      type: 'server-request',
+      rpcId: 'rpc_4',
+      method: 'session/status',
+      payload: { type: 'session/status', sessionId: 'session_4', running: false },
+    })).toEqual(expect.objectContaining({ type: 'session', url: '/?session=session_4' }))
+    expect(pushNoticeFor({
+      type: 'server-request',
+      rpcId: 'rpc_5',
+      method: 'session/status',
+      payload: { type: 'session/status', sessionId: 'session_5', running: true },
+    })).toBeUndefined()
+    expect(pushNoticeFor({
+      type: 'server-request',
+      rpcId: 'rpc_6',
+      method: 'session/error',
+      payload: { type: 'session/error', sessionId: 'session_6', message: 'failed' },
+    })).toEqual(expect.objectContaining({ type: 'session', url: '/?session=session_6' }))
   })
 })

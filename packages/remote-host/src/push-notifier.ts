@@ -63,6 +63,7 @@ export interface PushNotifierOptions {
 export interface PushNotifyResult {
   sent: number
   removed: number
+  failed: number
 }
 
 export interface PushSubscriptionStore {
@@ -102,7 +103,16 @@ export async function loadOrCreateVapidDetails(filePath: string, subject: string
       && value.publicKey !== ''
       && value.privateKey !== ''
     ) {
-      return value as VapidDetails
+      const details: VapidDetails = {
+        subject,
+        publicKey: value.publicKey,
+        privateKey: value.privateKey,
+      }
+      if (value.subject !== subject) {
+        await mkdir(dirname(filePath), { recursive: true })
+        await writeFile(filePath, JSON.stringify(details, null, 2), { encoding: 'utf8', mode: 0o600 })
+      }
+      return details
     }
   } catch (error) {
     if (!isFileMissing(error)) throw error
@@ -197,11 +207,12 @@ export class PushNotifier {
     const now = this.now()
     const previous = this.sentTags.get(payload.tag)
     if (previous !== undefined && now - previous < PUSH_TTL_SECONDS * 1_000) {
-      return { sent: 0, removed: 0 }
+      return { sent: 0, removed: 0, failed: 0 }
     }
     const serialized = JSON.stringify(payload)
     let sent = 0
     let removed = 0
+    let failed = 0
     for (const record of [...this.subscriptions.values()]) {
       try {
         await this.send(record, serialized, {
@@ -217,6 +228,8 @@ export class PushNotifier {
         if (statusCode === 404 || statusCode === 410) {
           this.subscriptions.delete(record.subscriptionId)
           removed += 1
+        } else {
+          failed += 1
         }
       }
     }
@@ -225,7 +238,7 @@ export class PushNotifier {
     for (const [tag, sentAt] of this.sentTags) {
       if (now - sentAt >= PUSH_TTL_SECONDS * 1_000) this.sentTags.delete(tag)
     }
-    return { sent, removed }
+    return { sent, removed, failed }
   }
 
   private owns(subscription: PushSubscriptionRecord, principal: RemotePrincipal): boolean {
@@ -276,8 +289,26 @@ export function pushNoticeFor(message: HarnessServerRequest): PushPayload | unde
         title: failed ? '任务执行失败' : '任务已完成',
         body: failed ? '打开任务查看失败原因' : '打开任务查看 Agent 结果',
         url,
-        tag: `session:${sessionId ?? message.rpcId}:${eventType}`,
+        tag: `session:${sessionId ?? message.rpcId}:${failed ? 'failed' : 'finished'}`,
       }
+    }
+  }
+  if (type === 'session/status' && payload?.running === false) {
+    return {
+      type: 'session',
+      title: '任务已完成',
+      body: '打开任务查看 Agent 结果',
+      url,
+      tag: `session:${sessionId ?? message.rpcId}:finished`,
+    }
+  }
+  if (type === 'session/error') {
+    return {
+      type: 'session',
+      title: '任务执行失败',
+      body: '打开任务查看失败原因',
+      url,
+      tag: `session:${sessionId ?? message.rpcId}:failed`,
     }
   }
   return undefined
