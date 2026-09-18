@@ -289,7 +289,7 @@ export function pushNoticeFor(message: HarnessServerRequest): PushPayload | unde
         title: failed ? '任务执行失败' : '任务已完成',
         body: failed ? '打开任务查看失败原因' : '打开任务查看 Agent 结果',
         url,
-        tag: `session:${sessionId ?? message.rpcId}:${failed ? 'failed' : 'finished'}`,
+        tag: `session:${sessionId ?? message.rpcId}:${failed ? 'failed' : 'finished'}:${eventSequence(event, message.rpcId)}`,
       }
     }
   }
@@ -299,7 +299,7 @@ export function pushNoticeFor(message: HarnessServerRequest): PushPayload | unde
       title: '任务已完成',
       body: '打开任务查看 Agent 结果',
       url,
-      tag: `session:${sessionId ?? message.rpcId}:finished`,
+      tag: `session:${sessionId ?? message.rpcId}:finished:${message.rpcId}`,
     }
   }
   if (type === 'session/error') {
@@ -308,10 +308,14 @@ export function pushNoticeFor(message: HarnessServerRequest): PushPayload | unde
       title: '任务执行失败',
       body: '打开任务查看失败原因',
       url,
-      tag: `session:${sessionId ?? message.rpcId}:failed`,
+      tag: `session:${sessionId ?? message.rpcId}:failed:${message.rpcId}`,
     }
   }
   return undefined
+}
+
+function eventSequence(event: Record<string, unknown> | undefined, fallback: string): string {
+  return typeof event?.seq === 'number' ? String(event.seq) : fallback
 }
 
 function validateSubscription(input: PushSubscriptionInput): void {

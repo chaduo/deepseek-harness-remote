@@ -190,4 +190,23 @@ describe('PushNotifier', () => {
       payload: { type: 'session/error', sessionId: 'session_6', message: 'failed' },
     })).toEqual(expect.objectContaining({ type: 'session', url: '/?session=session_6' }))
   })
+
+  it('uses a new completion tag for each run in the same session', () => {
+    const first = pushNoticeFor({
+      type: 'server-request',
+      rpcId: 'rpc_run_1',
+      method: 'session/status',
+      payload: { type: 'session/status', sessionId: 'session_1', running: false },
+    })
+    const second = pushNoticeFor({
+      type: 'server-request',
+      rpcId: 'rpc_run_2',
+      method: 'session/status',
+      payload: { type: 'session/status', sessionId: 'session_1', running: false },
+    })
+
+    expect(first?.tag).toBeDefined()
+    expect(second?.tag).toBeDefined()
+    expect(first?.tag).not.toBe(second?.tag)
+  })
 })
