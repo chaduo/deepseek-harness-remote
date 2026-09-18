@@ -357,9 +357,6 @@ function TaskHomeHeader(props: {
 }) {
   return (
     <div className="task-home-header">
-      <button className="task-home-circle" aria-label="打开导航" onClick={props.onToggleMenu}>
-        <Icon name="menu" />
-      </button>
       <div className="task-home-header-copy">
         <h1>远程</h1>
         <div className="task-home-host">
@@ -368,8 +365,8 @@ function TaskHomeHeader(props: {
           <span>{props.hostLabel}</span>
         </div>
       </div>
-      <button className="task-home-circle" aria-label="更多操作" onClick={props.onToggleMenu}>
-        <Icon name="more" />
+      <button className="task-home-circle" aria-label="打开导航" onClick={props.onToggleMenu}>
+        <Icon name="menu" />
       </button>
     </div>
   )

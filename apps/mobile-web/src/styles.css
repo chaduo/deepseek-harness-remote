@@ -456,7 +456,7 @@ main {
 .task-navigation-menu {
   position: fixed;
   top: calc(env(safe-area-inset-top) + 82px);
-  left: 16px;
+  right: 16px;
   z-index: 50;
   display: grid;
   width: 190px;
